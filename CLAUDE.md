@@ -6,7 +6,7 @@ Draw.io Desktop is an Electron-based desktop application that wraps the core dra
 
 **Repository:** https://github.com/jgraph/drawio-desktop
 **License:** Apache 2.0
-**Current Version:** 29.3.0
+**Current Version:** 29.6.1
 
 ## Quick Reference
 

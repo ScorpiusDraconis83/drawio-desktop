@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
+dotenv.config({ quiet: true });
 import { notarize } from '@electron/notarize';
 import { execSync } from 'child_process';
 import path from 'path';

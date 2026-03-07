@@ -1,6 +1,6 @@
 {
   "name": "draw.io",
-  "version": "29.5.2",
+  "version": "29.6.1",
   "description": "draw.io desktop",
   "exports": "./src/main/electron.js",
   "type": "module",
@@ -37,7 +37,7 @@
   "dependencies": {
     "@cantoo/pdf-lib": "^2.6.1",
     "buffer": "^6.0.3",
-    "commander": "^13.1.0",
+    "commander": "^14.0.3",
     "compression": "^1.8.1",
     "crc": "^4.3.2",
     "electron-context-menu": "^4.1.1",
@@ -50,7 +50,7 @@
   "devDependencies": {
     "@electron/fuses": "^1.8.0",
     "@electron/notarize": "^3.1.1",
-    "dotenv": "^16.6.1",
+    "dotenv": "^17.3.1",
     "electron": "^39.6.1",
     "electron-builder": "^26.8.1",
     "quicklookjs": "^1.0.1",
