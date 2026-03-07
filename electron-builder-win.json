@@ -1,6 +1,6 @@
 {
   "appId": "com.jgraph.drawio.desktop",
-  "copyright": "Copyright 2017-2025 draw.io Ltd",
+  "copyright": "Copyright 2017-2026 draw.io Ltd",
   "asar": true,
   "files": [
     "**/*",

@@ -6,7 +6,7 @@ Draw.io Desktop is an Electron-based desktop application that wraps the core dra
 
 **Repository:** https://github.com/jgraph/drawio-desktop
 **License:** Apache 2.0
-**Current Version:** 29.3.0
+**Current Version:** 29.6.1
 
 ## Quick Reference
 
@@ -43,8 +43,10 @@ drawio-desktop/
 ├── drawio/                   # Git submodule - core draw.io editor
 │   └── src/main/webapp/      # Web application loaded in Electron
 ├── build/                    # Build resources
-│   ├── notarize.mjs          # macOS notarization
+│   ├── notarize.mjs          # macOS Quick Look setup, signing + notarization
 │   ├── fuses.cjs             # Electron security fuses
+│   ├── quicklook-preview.html # Quick Look preview page (viewer-static.min.js)
+│   ├── quicklook-entitlements.plist # Sandbox entitlements for .appex
 │   └── entitlements.mac.plist
 ├── doc/
 │   └── RELEASE_PROCESS.md    # Release workflow documentation
@@ -56,7 +58,7 @@ drawio-desktop/
 ## Tech Stack
 
 - **Runtime:** Node.js 20+
-- **Framework:** Electron 38.x
+- **Framework:** Electron 39.x
 - **Language:** JavaScript (ES6 modules)
 - **Build Tool:** electron-builder
 - **Package Manager:** npm
@@ -103,7 +105,7 @@ Tags trigger CI/CD build workflows.
 1. **Sync version:** `npm run sync` reads `drawio/VERSION` and updates `package.json`
 2. **Install:** `npm ci` for clean install
 3. **Build:** `electron-builder` with platform-specific config
-4. **Post-build:** Security fuses applied (Windows), notarization (macOS)
+4. **Post-build:** Security fuses applied, Quick Look extension assembled (macOS), notarization (macOS)
 
 ### Platform Build Commands
 | Command | Target |
@@ -132,6 +134,16 @@ electron.request({action: 'save', data: ...}, callbackId);
 // Main process handles and responds via IPC
 ipcMain.on('request', (e, data) => { ... });
 ```
+
+### macOS Quick Look Preview
+- Pressing Space in Finder shows a rendered preview of `.drawio` files
+- Uses `quicklookjs` to embed a Quick Look App Extension (`.appex`) in the app bundle
+- The `.appex` loads `viewer-static.min.js` (with embedded shapes) in a WKWebView
+- **Build flow:** `afterPack` (fuses.cjs) applies security fuses, then `afterSign` (notarize.mjs) assembles the `.appex`, signs it with sandbox entitlements, re-signs the outer `.app`, and notarizes
+- The `.appex` is inserted in `afterSign` (not `afterPack`) so it is never present unsigned during electron-builder's signing verification
+- Quick Look extensions require `app-sandbox`, but Electron helpers must not be sandboxed — so the `.appex` gets different entitlements than `entitlementsInherit`
+- The UTI `com.jgraph.drawio` is declared via `extendInfo` in `electron-builder-linux-mac.json`
+- `viewer-static.min.js` is saved to `build/` during CI before the cleanup step removes it from the drawio submodule; for local dev, it's read from the submodule directly
 
 ### Auto-Update
 - Checks GitHub releases on startup
@@ -185,3 +197,4 @@ No automated tests. Manual testing documented in `doc/RELEASE_PROCESS.md`:
 | `electron-store` | Persistent storage |
 | `@cantoo/pdf-lib` | PDF export |
 | `commander` | CLI argument parsing |
+| `quicklookjs` | macOS Quick Look preview extension (dev) |

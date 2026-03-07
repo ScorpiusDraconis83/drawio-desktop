@@ -759,71 +759,91 @@ app.whenReady().then(() =>
 							
 							function startExport()
 							{
+								var replied = false;
 								var mockEvent = {
 									reply: function(msg, data)
 									{
+										if (replied) return;
+										replied = true;
+
 										try
 										{
-											if (data == null || data.length == 0)
+											if (msg == 'export-success')
 											{
-												console.error('Error: Export failed: ' + curFile);
-											}
-											else if (msg == 'export-success')
-											{
-												var outFileName = null;
-												
-												if (outType != null)
+												if (data == null || data.length == 0)
 												{
-													if (outType.isDir)
-													{
-														outFileName = path.join(options.output, path.basename(curFile,
-															path.extname(curFile))) + '.' + format;
-													}
-													else
-													{
-														outFileName = options.output;
-													}
+													console.error('Error: Empty export data: ' + curFile);
 												}
-												else if (inStat.isFile())
+												else
 												{
-													outFileName = path.join(path.dirname(paths[0]), path.basename(paths[0],
-														path.extname(paths[0]))) + '.' + format;
-													
-												}
-												else //dir
-												{
-													outFileName = path.join(path.dirname(curFile), path.basename(curFile,
-														path.extname(curFile))) + '.' + format;
-												}
-												
-												try
-												{
-													var counter = 0;
-													var realFileName = outFileName;
-													
-													if (program.rawArgs.indexOf('-k') > -1 || program.rawArgs.indexOf('--check') > -1)
+													var outFileName = null;
+
+													if (outType != null)
 													{
-														while (fs.existsSync(realFileName))
+														if (outType.isDir)
 														{
-															counter++;
-															realFileName = path.join(path.dirname(outFileName), path.basename(outFileName,
-																path.extname(outFileName))) + '-' + counter + path.extname(outFileName);
+															outFileName = path.join(options.output, path.basename(curFile,
+																path.extname(curFile))) + '.' + format;
+														}
+														else
+														{
+															outFileName = options.output;
 														}
 													}
-													
-													fs.writeFileSync(realFileName, data, null, { flag: 'wx' });
-													console.log(curFile + ' -> ' + realFileName);
-												}
-												catch(e)
-												{
-													console.error('Error writing to file: ' + outFileName);
+													else if (inStat.isFile())
+													{
+														outFileName = path.join(path.dirname(paths[0]), path.basename(paths[0],
+															path.extname(paths[0]))) + '.' + format;
+
+													}
+													else //dir
+													{
+														outFileName = path.join(path.dirname(curFile), path.basename(curFile,
+															path.extname(curFile))) + '.' + format;
+													}
+
+													try
+													{
+														var counter = 0;
+														var realFileName = outFileName;
+
+														if (program.rawArgs.indexOf('-k') > -1 || program.rawArgs.indexOf('--check') > -1)
+														{
+															while (fs.existsSync(realFileName))
+															{
+																counter++;
+																realFileName = path.join(path.dirname(outFileName), path.basename(outFileName,
+																	path.extname(outFileName))) + '-' + counter + path.extname(outFileName);
+															}
+														}
+
+														let fh = fs.openSync(realFileName,
+															fs.constants.O_SYNC | fs.constants.O_CREAT |
+															fs.constants.O_WRONLY | fs.constants.O_TRUNC);
+
+														try
+														{
+															fs.writeFileSync(fh, data);
+															fs.fsyncSync(fh);
+														}
+														finally
+														{
+															fs.closeSync(fh);
+														}
+
+														console.log(curFile + ' -> ' + realFileName);
+													}
+													catch(e)
+													{
+														console.error('Error writing to file: ' + outFileName);
+													}
 												}
 											}
 											else
 											{
-												console.error('Error: ' + data + ': ' + curFile);
+												console.error('Error: ' + (data || 'Export failed') + ': ' + curFile);
 											}
-											
+
 											next();
 										}
 										finally
@@ -2211,8 +2231,19 @@ async function saveDraft(fileObject, data)
 	}
 	else
 	{
-		await fsProm.writeFile(draftFileName, data, 'utf8');
-		
+		let draftFh;
+
+		try
+		{
+			draftFh = await fsProm.open(draftFileName, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+			await fsProm.writeFile(draftFh, data, 'utf8');
+			await draftFh.sync(); // Flush to disk
+		}
+		finally
+		{
+			await draftFh?.close();
+		}
+
 		if (isWin)
 		{
 			try

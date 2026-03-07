@@ -45,7 +45,7 @@ async function addElectronFuses(context)
     });
 }
 
-module.exports = async (context) => 
+module.exports = async (context) =>
 {
     await addElectronFuses(context);
 };

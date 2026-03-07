@@ -1,6 +1,6 @@
 {
   "appId": "com.jgraph.drawio.desktop",
-  "copyright": "Copyright 2017-20126 draw.io Ltd",
+  "copyright": "Copyright 2017-2026 draw.io Ltd",
   "asar": true,
   "files": [
     "**/*",
@@ -20,6 +20,19 @@
   	"entitlements": "build/entitlements.mac.plist",
   	"entitlementsInherit": "build/entitlements.mac.plist",
     "category": "public.app-category.graphics-design",
+    "extendInfo": {
+      "UTExportedTypeDeclarations": [
+        {
+          "UTTypeIdentifier": "com.jgraph.drawio",
+          "UTTypeDescription": "draw.io Diagram",
+          "UTTypeConformsTo": ["public.xml", "public.data"],
+          "UTTypeTagSpecification": {
+            "public.filename-extension": ["drawio"],
+            "public.mime-type": ["application/vnd.jgraph.mxfile"]
+          }
+        }
+      ]
+    },
     "target": [
       { "target": "zip", "arch": [
           "x64",

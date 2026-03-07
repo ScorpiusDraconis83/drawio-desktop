@@ -52,6 +52,8 @@ jobs:
         cd drawio
         rm -rf docs etc src/main/java src/main/webapp/connect src/main/webapp/service-worker* src/main/webapp/workbox-*
         cd src/main/webapp/js
+        # Save viewer-static.min.js for macOS Quick Look extension before cleanup
+        if [ "$OS_NAME" = "macos-latest" ]; then cp viewer-static.min.js ../../../../../build/viewer-static.min.js; fi
         rm -rf atlas-viewer.min.js atlas.min.js cryptojs deflate dropbox embed* freehand integrate.min.js jquery jszip mermaid onedrive orgchart reader.min.js rough sanitizer simplepeer spin viewer-static.min.js viewer.min.js
     - name: Installing Node
       uses: actions/setup-node@v4

@@ -5,3 +5,4 @@ node_modules
 /.classpath
 /.settings
 .DS_Store
+.claude/settings.local.json
