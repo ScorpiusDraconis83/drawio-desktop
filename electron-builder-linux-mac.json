@@ -31,6 +31,23 @@
             "public.mime-type": ["application/vnd.jgraph.mxfile"]
           }
         }
+      ],
+      "CFBundleDocumentTypes": [
+        {
+          "CFBundleTypeExtensions": ["drawio"],
+          "CFBundleTypeName": "draw.io Diagram",
+          "CFBundleTypeRole": "Editor",
+          "CFBundleTypeIconFile": "icon.icns",
+          "LSItemContentTypes": ["com.jgraph.drawio"],
+          "LSHandlerRank": "Owner"
+        },
+        {
+          "CFBundleTypeExtensions": ["vsdx"],
+          "CFBundleTypeName": "VSDX Document",
+          "CFBundleTypeRole": "Editor",
+          "CFBundleTypeIconFile": "icon.icns",
+          "LSHandlerRank": "Default"
+        }
       ]
     },
     "target": [
@@ -91,8 +108,7 @@
 	  	"name": "draw.io Diagram",
 	  	"description": "draw.io Diagram",
 	  	"mimeType": "application/vnd.jgraph.mxfile",
-	  	"role": "Editor",
-	  	"contentType": "com.jgraph.drawio"
+	  	"role": "Editor"
 	  },
 	  {
 	  	"ext": "vsdx",
