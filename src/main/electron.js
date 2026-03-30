@@ -14,7 +14,7 @@ import {PDFDocument} from '@cantoo/pdf-lib';
 import Store from 'electron-store';
 import ProgressBar from 'electron-progressbar';
 import contextMenu from 'electron-context-menu';
-import {spawn} from 'child_process';
+import {spawn, exec} from 'child_process';
 import {disableUpdate as disUpPkg} from './disableUpdate.js';
 
 let store;
@@ -371,15 +371,20 @@ function isPluginsEnabled()
 app.whenReady().then(() =>
 {
 	// Enforce our CSP on all contents
-	session.defaultSession.webRequest.onHeadersReceived((details, callback) => 
+	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
 	{
+		// Skip CSP for config-editor iframe
+		if (details.url.indexOf('config-editor.html') >= 0)
+		{
+			callback({responseHeaders: details.responseHeaders});
+			return;
+		}
+
 		callback({
 			responseHeaders: {
 				...details.responseHeaders,
-				// Replace the first sha with the one of the current version shown in the console log (the second one is for the second script block which is rarely changed)
-				// 3rd sha is for electron-progressbar
-				'Content-Security-Policy': ['default-src \'self\'; script-src \'self\' \'sha256-f6cHSTUnCvbQqwa6rKcbWIpgN9dLl0ROfpEKTQUQPr8=\' \'sha256-6g514VrT/cZFZltSaKxIVNFF46+MFaTSDTPB8WfYK+c=\' \'sha256-ZQ86kVKhLmcnklYAnUksoyZaLkv7vvOG9cc/hBJAEuQ=\'; connect-src \'self\'' +
-				(isGoogleFontsEnabled? ' https://fonts.googleapis.com https://fonts.gstatic.com' : '') + '; img-src * data:; media-src *; font-src * data:; frame-src \'none\'; style-src \'self\' \'unsafe-inline\'' +
+				'Content-Security-Policy': ['default-src \'self\'; script-src \'self\'; connect-src \'self\'' +
+				(isGoogleFontsEnabled? ' https://fonts.googleapis.com https://fonts.gstatic.com' : '') + '; img-src * data:; media-src *; font-src * data:; frame-src \'self\'; style-src \'self\' \'unsafe-inline\'' +
 				(isGoogleFontsEnabled? ' https://fonts.googleapis.com' : '') + '; base-uri \'none\';child-src \'self\';object-src \'none\';']
 			}
 		})
@@ -2852,7 +2857,40 @@ function unwatchFile(filePath)
 	fs.unwatchFile(filePath);
 }
 
-ipcMain.on("rendererReq", async (event, args) => 
+function getLocalFonts()
+{
+	return new Promise((resolve) =>
+	{
+		let cmd;
+
+		if (process.platform === 'win32')
+		{
+			cmd = 'powershell -NoProfile -command "Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }"';
+		}
+		else
+		{
+			cmd = 'fc-list --format="%{family[0]}\\n"';
+		}
+
+		exec(cmd, {encoding: 'utf8', timeout: 30000}, (err, stdout) =>
+		{
+			if (err)
+			{
+				resolve([]);
+				return;
+			}
+
+			let fonts = stdout.split('\n')
+				.map(f => f.trim())
+				.filter(f => f.length > 0);
+			fonts = [...new Set(fonts)].sort(
+				(a, b) => a.localeCompare(b));
+			resolve(fonts);
+		});
+	});
+}
+
+ipcMain.on("rendererReq", async (event, args) =>
 {
 	if (!validateSender(event.senderFrame)) return null;
 
@@ -2936,6 +2974,9 @@ ipcMain.on("rendererReq", async (event, args) =>
 			break;
 		case 'exit':
 			app.quit();
+			break;
+		case 'getLocalFonts':
+			ret = await getLocalFonts();
 			break;
 		case 'isFullscreen':
 			ret = BrowserWindow.getFocusedWindow().isFullScreen();
