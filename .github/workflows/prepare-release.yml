@@ -12,7 +12,7 @@ on:
         required: false
         type: string
       drawio_ref:
-        description: 'draw.io ref to use (tag, branch, or commit). Leave empty to use v{version}'
+        description: 'Public drawio submodule ref (tag, branch, or commit). Leave empty to keep the current submodule pin — useful when the public repo has not yet tagged this release.'
         required: false
         type: string
       dry_run:
@@ -63,28 +63,45 @@ jobs:
         run: |
           if [ -n "${{ inputs.drawio_ref }}" ]; then
             echo "DRAWIO_REF=${{ inputs.drawio_ref }}" >> $GITHUB_ENV
+            echo "DRAWIO_UPDATE=true" >> $GITHUB_ENV
+            echo "DRAWIO_SUMMARY=updated to ${{ inputs.drawio_ref }}" >> $GITHUB_ENV
           else
-            echo "DRAWIO_REF=v${{ inputs.version }}" >> $GITHUB_ENV
+            # No ref supplied: keep the submodule at its current pin. CI builds
+            # source the editor from drawio-dev's release branch anyway, so the
+            # public submodule only needs to track whatever public commit is
+            # appropriate for out-of-tree builders — which may lag this release.
+            echo "DRAWIO_REF=" >> $GITHUB_ENV
+            echo "DRAWIO_UPDATE=false" >> $GITHUB_ENV
+            echo "DRAWIO_SUMMARY=unchanged (no drawio_ref supplied; CI builds from drawio-dev)" >> $GITHUB_ENV
           fi
-          
+
       - name: Update drawio submodule
+        if: env.DRAWIO_UPDATE == 'true'
         run: |
           cd drawio
           git fetch origin --tags
-          
+
           # Check if ref exists
           if ! git rev-parse --verify "${{ env.DRAWIO_REF }}" >/dev/null 2>&1; then
             echo "::error::Ref '${{ env.DRAWIO_REF }}' not found in drawio repository"
             exit 1
           fi
-          
+
           git checkout "${{ env.DRAWIO_REF }}"
-          
+
           # Update any nested submodules in drawio
           git submodule update --init --recursive
-          
+
           echo "DRAWIO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
           echo "Updated drawio to: $(git describe --tags --always)"
+          cd ..
+
+      - name: Record current drawio submodule pin
+        if: env.DRAWIO_UPDATE != 'true'
+        run: |
+          cd drawio
+          echo "DRAWIO_COMMIT=$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "drawio submodule left at: $(git describe --tags --always)"
           cd ..
           
       - name: Update package.json version
@@ -118,29 +135,46 @@ jobs:
           ELECTRON_VERSION=$(jq -r '.packages["node_modules/electron"].version' package-lock.json)
           echo "ELECTRON_VERSION=$ELECTRON_VERSION" >> $GITHUB_ENV
           
-          # Generate release notes
-          cat > release-notes.md << 'RELEASE_EOF'
-          ## Release Notes for VERSION_PLACEHOLDER
-          
-          [Windows Installer](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/draw.io-VERSION_PLACEHOLDER-windows-installer.exe)
-          [Windows No Installer (zip)](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/draw.io-VERSION_PLACEHOLDER-windows.zip)
-          [macOS - Universal](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/draw.io-universal-VERSION_PLACEHOLDER.dmg)
-          Linux - [deb](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/drawio-amd64-VERSION_PLACEHOLDER.deb), [AppImage](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/drawio-x86_64-VERSION_PLACEHOLDER.AppImage) or [rpm](https://github.com/jgraph/drawio-desktop/releases/download/vVERSION_PLACEHOLDER/drawio-x86_64-VERSION_PLACEHOLDER.rpm)
-          Windows intel x32 releases are marked -ia32-
-          
-          **ChangeLog:**
-          - Uses electron ELECTRON_PLACEHOLDER.
-          - Updates to [draw.io core VERSION_PLACEHOLDER](https://github.com/jgraph/drawio/blob/vVERSION_PLACEHOLDER/ChangeLog).PREV_PLACEHOLDER
-          RELEASE_EOF
-          
-          # Replace placeholders
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" release-notes.md
-          sed -i "s/ELECTRON_PLACEHOLDER/${ELECTRON_VERSION}/g" release-notes.md
+          # Build the previous-version trailer once so it can be appended to
+          # the ChangeLog line regardless of which variant we emit.
           if [ -n "$PREV_VERSION" ]; then
-            sed -i "s/PREV_PLACEHOLDER/ All changes from ${PREV_VERSION} to ${VERSION} are added in this build./g" release-notes.md
+            PREV_TEXT=" All changes from ${PREV_VERSION} to ${VERSION} are added in this build."
           else
-            sed -i "s/PREV_PLACEHOLDER//g" release-notes.md
+            PREV_TEXT=""
           fi
+
+          # Check whether the public drawio repo has tagged this version yet.
+          # The internal drawio-dev can be ahead, in which case a ChangeLog link
+          # to jgraph/drawio/blob/v{VERSION}/ChangeLog would 404. We probe the
+          # tag via the unauthenticated GitHub API and swap in a plain note when
+          # the tag is not yet published.
+          PUBLIC_TAG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "https://api.github.com/repos/jgraph/drawio/git/refs/tags/v${VERSION}")
+          if [ "$PUBLIC_TAG_STATUS" = "200" ]; then
+            CHANGELOG_LINE="- Updates to [draw.io core ${VERSION}](https://github.com/jgraph/drawio/blob/v${VERSION}/ChangeLog).${PREV_TEXT}"
+            echo "Public drawio tag v${VERSION} exists — including ChangeLog link."
+          else
+            CHANGELOG_LINE="- Built from the drawio-dev release branch. The public drawio tag v${VERSION} is not yet available; the ChangeLog will be at https://github.com/jgraph/drawio/blob/v${VERSION}/ChangeLog once the public tag is pushed.${PREV_TEXT}"
+            echo "Public drawio tag v${VERSION} not yet available (HTTP ${PUBLIC_TAG_STATUS}) — emitting deferred-link note."
+          fi
+
+          # Generate release notes. We use a variable-expanding heredoc (no
+          # quotes around RELEASE_EOF) so ${VERSION}, ${ELECTRON_VERSION}, and
+          # ${CHANGELOG_LINE} are substituted in place — no post-hoc sed pass
+          # that could mis-escape URL or markdown characters.
+          cat > release-notes.md << RELEASE_EOF
+          ## Release Notes for ${VERSION}
+
+          [Windows Installer](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/draw.io-${VERSION}-windows-installer.exe)
+          [Windows No Installer (zip)](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/draw.io-${VERSION}-windows.zip)
+          [macOS - Universal](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/draw.io-universal-${VERSION}.dmg)
+          Linux - [deb](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/drawio-amd64-${VERSION}.deb), [AppImage](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/drawio-x86_64-${VERSION}.AppImage) or [rpm](https://github.com/jgraph/drawio-desktop/releases/download/v${VERSION}/drawio-x86_64-${VERSION}.rpm)
+          Windows intel x32 releases are marked -ia32-
+
+          **ChangeLog:**
+          - Uses electron ${ELECTRON_VERSION}.
+          ${CHANGELOG_LINE}
+          RELEASE_EOF
           
           echo "## Generated Release Notes" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -216,7 +250,7 @@ jobs:
           echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Version | ${{ env.VERSION }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Electron | ${{ env.ELECTRON_VERSION }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| drawio ref | ${{ env.DRAWIO_REF }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| drawio submodule | ${{ env.DRAWIO_SUMMARY }} |" >> $GITHUB_STEP_SUMMARY
           echo "| drawio commit | ${{ env.DRAWIO_COMMIT }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Node.js | $(node --version) |" >> $GITHUB_STEP_SUMMARY
           echo "| npm | $(npm --version) |" >> $GITHUB_STEP_SUMMARY
@@ -241,11 +275,11 @@ jobs:
           git add -A
           git commit -m "Prepare release v${{ env.VERSION }}
 
-          - Updated drawio submodule to ${{ env.DRAWIO_REF }} (${{ env.DRAWIO_COMMIT }})
+          - drawio submodule: ${{ env.DRAWIO_SUMMARY }} (${{ env.DRAWIO_COMMIT }})
           - Updated package.json version to ${{ env.VERSION }}
           - Updated package-lock.json
           - Electron version: ${{ env.ELECTRON_VERSION }}
-          
+
           Automated by prepare-release workflow"
           
           git push origin "releases/v${{ env.VERSION }}"
@@ -271,7 +305,7 @@ jobs:
           This PR prepares release v${{ env.VERSION }}.
 
           ### Changes
-          - Updated drawio submodule to ${{ env.DRAWIO_REF }}
+          - drawio submodule: ${{ env.DRAWIO_SUMMARY }}
           - Updated package.json version to ${{ env.VERSION }}
           - Electron version: ${{ env.ELECTRON_VERSION }}
 

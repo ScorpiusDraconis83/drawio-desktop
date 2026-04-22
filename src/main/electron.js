@@ -14,7 +14,7 @@ import {PDFDocument} from '@cantoo/pdf-lib';
 import Store from 'electron-store';
 import ProgressBar from 'electron-progressbar';
 import contextMenu from 'electron-context-menu';
-import {spawn} from 'child_process';
+import {spawn, exec} from 'child_process';
 import {disableUpdate as disUpPkg} from './disableUpdate.js';
 
 let store;
@@ -235,6 +235,18 @@ function createWindow (opt = {})
 	
 	mainWindow.loadURL(ourl)
 
+	// Intercept Ctrl/Cmd+Shift+V before it reaches the renderer
+	// so paste-without-formatting works even when the web app captures the shortcut
+	mainWindow.webContents.on('before-input-event', (event, input) =>
+	{
+		if (input.type === 'keyDown' && input.key === 'v' &&
+			input.shift && (isMac ? input.meta : input.control) && !input.alt)
+		{
+			event.preventDefault();
+			mainWindow.webContents.pasteAndMatchStyle();
+		}
+	});
+
 	// Open the DevTools.
 	if (__DEV__)
 	{
@@ -371,15 +383,20 @@ function isPluginsEnabled()
 app.whenReady().then(() =>
 {
 	// Enforce our CSP on all contents
-	session.defaultSession.webRequest.onHeadersReceived((details, callback) => 
+	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
 	{
+		// Skip CSP for config-editor iframe
+		if (details.url.indexOf('config-editor.html') >= 0)
+		{
+			callback({responseHeaders: details.responseHeaders});
+			return;
+		}
+
 		callback({
 			responseHeaders: {
 				...details.responseHeaders,
-				// Replace the first sha with the one of the current version shown in the console log (the second one is for the second script block which is rarely changed)
-				// 3rd sha is for electron-progressbar
-				'Content-Security-Policy': ['default-src \'self\'; script-src \'self\' \'sha256-f6cHSTUnCvbQqwa6rKcbWIpgN9dLl0ROfpEKTQUQPr8=\' \'sha256-6g514VrT/cZFZltSaKxIVNFF46+MFaTSDTPB8WfYK+c=\' \'sha256-ZQ86kVKhLmcnklYAnUksoyZaLkv7vvOG9cc/hBJAEuQ=\'; connect-src \'self\'' +
-				(isGoogleFontsEnabled? ' https://fonts.googleapis.com https://fonts.gstatic.com' : '') + '; img-src * data:; media-src *; font-src * data:; frame-src \'none\'; style-src \'self\' \'unsafe-inline\'' +
+				'Content-Security-Policy': ['default-src \'self\'; script-src \'self\'; connect-src \'self\'' +
+				(isGoogleFontsEnabled? ' https://fonts.googleapis.com https://fonts.gstatic.com' : '') + '; img-src * data:; media-src *; font-src * data:; frame-src \'self\'; style-src \'self\' \'unsafe-inline\'' +
 				(isGoogleFontsEnabled? ' https://fonts.googleapis.com' : '') + '; base-uri \'none\';child-src \'self\';object-src \'none\';']
 			}
 		})
@@ -433,9 +450,12 @@ app.whenReady().then(() =>
         argv.unshift(null)
     }
 
-	var validFormatRegExp = /^(pdf|svg|png|jpeg|jpg|xml)$/;
+	var validFormatRegExp = /^(pdf|svg|png|jpeg|jpg|xml|html)$/;
 	var themeRegExp = /^(dark|light)$/;
 	var linkTargetRegExp = /^(auto|new-win|same-win)$/;
+	var htmlThemeRegExp = /^(dark|light|auto)$/;
+	var htmlLinkTargetRegExp = /^(auto|blank|self)$/;
+	function parseBool(val) { return val === 'true'; }
 	
 	function argsRange(val)
 	{
@@ -456,7 +476,7 @@ app.whenReady().then(() =>
 	        .option('-r, --recursive', 'for a folder input, recursively convert all files in sub-folders also')
 	        .option('-o, --output <output file/folder>', 'specify the output file/folder. If omitted, the input file name is used for output with the specified format as extension')
 	        .option('-f, --format <format>',
-			    'if output file name extension is specified, this option is ignored (file type is determined from output extension, possible export formats are pdf, png, jpg, svg, and xml)',
+			    'if output file name extension is specified, this option is ignored (file type is determined from output extension, possible export formats are pdf, png, jpg, svg, xml, and html)',
 			    validFormatRegExp, 'pdf')
 			.option('-q, --quality <quality>',
 				'output image quality for JPEG (default: 90)', parseInt)
@@ -467,7 +487,7 @@ app.whenReady().then(() =>
 			.option('--embed-svg-images',
 				'Embed Images in SVG file (for SVG format only)')
 			.option('--embed-svg-fonts <true/false>',
-				'Embed Fonts in SVG file (for SVG format only). Default is true', function(x){return x === 'true'}, true)
+				'Embed Fonts in SVG file (for SVG format only). Default is true', parseBool, true)
 			.option('-b, --border <border>',
 				'sets the border width around the diagram (default: 0)', parseInt)
 			.option('-s, --scale <scale>',
@@ -479,7 +499,7 @@ app.whenReady().then(() =>
 			.option('--crop',
 				'crops PDF to diagram size')
 			.option('-a, --all-pages',
-				'export all pages (for PDF format only)')
+				'export all pages (for PDF and HTML formats)')
 			.option('-p, --page-index <pageIndex>',
 				'selects a specific page (1-based); if not specified and the format is an image, the first page is selected', (i) => parseInt(i) - 1)
 			.option('-l, --layers <comma separated layer indexes>',
@@ -487,7 +507,7 @@ app.whenReady().then(() =>
 			.option('-g, --page-range <from>..<to>',
 				'selects a page range (1-based, for PDF format only)', argsRange)
 			.option('-u, --uncompressed',
-				'Uncompressed XML output (for XML format only)')
+				'Uncompressed XML output (for XML and SVG format only)')
 			.option('-z, --zoom <zoom>',
 				'scales the application interface', parseFloat)
 			.option('--svg-theme <theme>',
@@ -496,6 +516,24 @@ app.whenReady().then(() =>
 				'Target of links in the exported SVG image (auto [default], new-win, same-win)', linkTargetRegExp, 'auto')
 			.option('--enable-plugins',
 				'Enable Plugins')
+			.option('--html-theme <theme>',
+				'Theme of the HTML viewer (dark, light, auto [default])', htmlThemeRegExp, 'auto')
+			.option('--html-zoom <true/false>',
+				'Show zoom controls in HTML viewer (default: true)', parseBool, true)
+			.option('--html-lightbox <true/false>',
+				'Enable lightbox in HTML viewer (default: true)', parseBool, true)
+			.option('--html-layers <true/false>',
+				'Show layers toolbar in HTML viewer (default: true)', parseBool, true)
+			.option('--html-tags <true/false>',
+				'Show tags toolbar in HTML viewer (default: true)', parseBool, true)
+			.option('--html-fit <true/false>',
+				'Responsive fit to container width in HTML viewer (default: true)', parseBool, true)
+			.option('--html-link-target <target>',
+				'Link target in HTML viewer (auto [default], blank, self)', htmlLinkTargetRegExp, 'auto')
+			.option('--html-link-color <color>',
+				'Link highlight color in HTML viewer (default: #0000ff)')
+			.option('--html-edit-link <url>',
+				'URL for edit button in HTML viewer')
 	        .parse(argv)
 	}
 	catch(e)
@@ -603,11 +641,11 @@ app.whenReady().then(() =>
 				bg: options.transparent ? 'none' : '#ffffff',
 				from: from,
 				to: to,
-				allPages: format == 'pdf' && options.allPages,
+				allPages: (format == 'pdf' || format == 'html') && options.allPages,
 				scale: (options.scale || 1),
 				embedXml: options.embedDiagram? '1' : '0',
 				embedImages: options.embedSvgImages? '1' : '0',
-				embedFonts: options.embedSvgFonts? '1' : '0',
+				embedFonts: (options.embedSvgFonts === true || options.embedSvgFonts === 'true')? '1' : '0',
 				jpegQuality: options.quality,
 				uncompressed: options.uncompressed,
 				theme: options.svgTheme,
@@ -694,7 +732,7 @@ app.whenReady().then(() =>
 						{
 							var ext = path.extname(curFile);
 							
-							let fileContent = fs.readFileSync(curFile, ext === '.png' || ext === '.vsdx' ? null : 'utf-8');
+							let fileContent = fs.readFileSync(curFile, ext === '.png' || ext === '.pdf' || ext === '.vsdx' ? null : 'utf-8');
 							
 							if (ext === '.vsdx')
 							{
@@ -732,6 +770,11 @@ app.whenReady().then(() =>
 								else if (ext === '.png')
 								{
 									expArgs.xmlEncoded = true;
+									expArgs.xml = Buffer.from(fileContent).toString('base64');
+								}
+								else if (ext === '.pdf')
+								{
+									expArgs.pdfEncoded = true;
 									expArgs.xml = Buffer.from(fileContent).toString('base64');
 								}
 								else
@@ -853,7 +896,56 @@ app.whenReady().then(() =>
 							    	}
 								};
 
-								exportDiagram(mockEvent, expArgs, true);
+								if (format === 'html')
+								{
+									mockEvent.finalize = function() {};
+									var xml = expArgs.xml;
+
+									if (expArgs.xmlEncoded)
+									{
+										var pngBuf = Buffer.from(xml, 'base64');
+										xml = readPngXml(pngBuf);
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in PNG file');
+											return;
+										}
+									}
+									else if (expArgs.pdfEncoded)
+									{
+										xml = readPdfXml(Buffer.from(xml, 'base64'));
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in PDF file');
+											return;
+										}
+									}
+									else if (ext === '.svg')
+									{
+										xml = readSvgXml(xml);
+
+										if (xml == null)
+										{
+											mockEvent.reply('export-error', 'No diagram data found in SVG file');
+											return;
+										}
+									}
+									else if (expArgs.csv)
+									{
+										mockEvent.reply('export-error', 'CSV to HTML export is not supported');
+										return;
+									}
+
+									var title = path.basename(curFile, path.extname(curFile));
+									var htmlData = buildHtmlExport(xml, title, options);
+									mockEvent.reply('export-success', htmlData);
+								}
+								else
+								{
+									exportDiagram(mockEvent, expArgs, true);
+								}
 							};
 						}
 						catch(e)
@@ -1632,6 +1724,362 @@ async function mergePdfs(pdfFiles, xml)
 	{
         throw new Error('Error during PDF combination: ' + e.message);
     }
+}
+
+function htmlEntities(str)
+{
+	return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function readPngXml(buffer)
+{
+	var offset = 8; // Skip PNG signature
+
+	while (offset < buffer.length)
+	{
+		var length = buffer.readInt32BE(offset);
+		offset += 4;
+		var type = buffer.toString('ascii', offset, offset + 4);
+		offset += 4;
+
+		if (type === 'tEXt' || type === 'zTXt')
+		{
+			var keyEnd = offset;
+
+			while (keyEnd < offset + length && buffer[keyEnd] !== 0)
+			{
+				keyEnd++;
+			}
+
+			var key = buffer.toString('ascii', offset, keyEnd);
+
+			if (key === 'mxGraphModel')
+			{
+				if (type === 'zTXt')
+				{
+					var dataStart = keyEnd + 2; // Skip null + compression method
+					var compressed = buffer.subarray(dataStart, offset + length);
+					return decodeURIComponent(zlib.inflateRawSync(compressed).toString());
+				}
+				else
+				{
+					return buffer.toString('utf-8', keyEnd + 1, offset + length);
+				}
+			}
+		}
+
+		offset += length + 4; // Skip data + CRC
+	}
+
+	return null;
+}
+
+function readSvgXml(svgString)
+{
+	// Extracts content attribute from SVG root element
+	var match = /\bcontent="([^"]*)"/.exec(svgString);
+
+	if (match != null && match[1] != null)
+	{
+		var tmp = match[1];
+
+		// Decode HTML entities
+		tmp = tmp.replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+			.replace(/&amp;/g, '&').replace(/&quot;/g, '"')
+			.replace(/&#39;/g, "'").replace(/&#x27;/g, "'")
+			.replace(/&#x2F;/g, '/');
+
+		if (tmp.charAt(0) != '<' && tmp.charAt(0) != '%')
+		{
+			tmp = Buffer.from(tmp, 'base64').toString('utf-8');
+		}
+
+		if (tmp.charAt(0) == '%')
+		{
+			tmp = decodeURIComponent(tmp);
+		}
+
+		if (tmp != null && tmp.length > 0)
+		{
+			return tmp;
+		}
+	}
+
+	return null;
+}
+
+function readPdfXml(buffer)
+{
+	var f = buffer.toString('binary');
+	var result = null;
+
+	// Extracts Subject or Embedded file attachment from PDF 1.7
+	if (f.substring(0, 8) == '%PDF-1.7')
+	{
+		var blockStart = f.indexOf('EmbeddedFile');
+
+		if (blockStart > -1)
+		{
+			var streamStart = f.indexOf('stream', blockStart) + 9;
+			var fileInfo = f.substring(blockStart, streamStart);
+
+			if (fileInfo.indexOf('application#2Fvnd.jgraph.mxfile') > 0)
+			{
+				var streamEnd = f.indexOf('endstream', streamStart - 1);
+
+				try
+				{
+					return zlib.inflateRawSync(
+						Buffer.from(f.substring(streamStart, streamEnd), 'binary')).toString();
+				}
+				catch (e)
+				{
+					// Continue to next extraction method
+				}
+			}
+		}
+
+		var last = f.indexOf('/ObjStm');
+
+		while (last > 0)
+		{
+			var streamStart = f.indexOf('stream', last) + 9;
+			var streamEnd = f.indexOf('endstream', streamStart - 1);
+
+			try
+			{
+				var text = zlib.inflateRawSync(
+					Buffer.from(f.substring(streamStart, streamEnd), 'binary')).toString();
+				var subj = text.indexOf('/Subject <');
+
+				if (subj > 0)
+				{
+					var temp = text.substring(subj + 14, text.indexOf('>', subj));
+
+					if (temp != null)
+					{
+						// Convert hex to ASCII
+						var str = [];
+
+						for (var n = 0; n < temp.length; n += 2)
+						{
+							var code = temp.substr(n, 2);
+
+							if (code != '00')
+							{
+								str.push(String.fromCharCode(parseInt(code, 16)));
+							}
+						}
+
+						result = str.join('');
+					}
+
+					break;
+				}
+			}
+			catch (e)
+			{
+				// Continue to next object stream
+			}
+
+			last = f.indexOf('/ObjStm', last + 1);
+		}
+	}
+
+	// Extracts subject from PDF 1.4
+	if (result == null && f.substring(0, 8) == '%PDF-1.4')
+	{
+		var check = '/Subject (%3Cmxfile';
+		var curline = '';
+		var checked = 0;
+		var pos = 0;
+		var obj = [];
+		var buf = null;
+
+		while (pos < f.length)
+		{
+			var b = f.charCodeAt(pos);
+			pos += 1;
+
+			if (b != 10)
+			{
+				curline += String.fromCharCode(b);
+			}
+
+			if (b == check.charCodeAt(checked))
+			{
+				checked++;
+			}
+			else
+			{
+				checked = 0;
+			}
+
+			if (checked == check.length)
+			{
+				var end = f.indexOf('%3C%2Fmxfile%3E', pos) + 15;
+				pos -= 9;
+
+				if (end > pos)
+				{
+					result = f.substring(pos, end);
+					break;
+				}
+			}
+
+			if (b == 10)
+			{
+				if (curline == 'endobj')
+				{
+					buf = null;
+				}
+				else if (curline.substring(curline.length - 3, curline.length) == 'obj' ||
+					curline == 'xref' || curline == 'trailer')
+				{
+					buf = [];
+					obj[curline.split(' ')[0]] = buf;
+				}
+				else if (buf != null)
+				{
+					buf.push(curline);
+				}
+
+				curline = '';
+			}
+		}
+
+		// Extract XML via references
+		if (result == null && obj != null)
+		{
+			var trailer = obj['trailer'];
+
+			if (trailer != null)
+			{
+				var arr = /.* \/Info (\d+) (\d+) R/g.exec(trailer.join('\n'));
+
+				if (arr != null && arr.length > 0)
+				{
+					var info = obj[arr[1]];
+
+					if (info != null)
+					{
+						arr = /.* \/Subject (\d+) (\d+) R/g.exec(info.join('\n'));
+
+						if (arr != null && arr.length > 0)
+						{
+							var subj = obj[arr[1]];
+
+							if (subj != null)
+							{
+								subj = subj.join('\n');
+								result = subj.substring(1, subj.length - 1);
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if (result != null)
+	{
+		result = decodeURIComponent(result.
+			replace(/\\\(/g, "(").
+			replace(/\\\)/g, ")"));
+	}
+
+	return result;
+}
+
+function buildHtmlExport(xml, title, options)
+{
+	var data = {};
+
+	if (options.htmlLinkColor && options.htmlLinkColor !== 'none')
+	{
+		data.highlight = options.htmlLinkColor;
+	}
+	else
+	{
+		data.highlight = '#0000ff';
+	}
+
+	if (options.htmlLinkTarget && options.htmlLinkTarget !== 'auto')
+	{
+		data.target = options.htmlLinkTarget === 'blank' ? '_blank' : '_self';
+	}
+
+	if (options.htmlLightbox === false)
+	{
+		data.lightbox = false;
+	}
+
+	data.nav = true;
+	data.resize = true;
+	data.xml = xml;
+
+	var tb = [];
+
+	if (options.allPages)
+	{
+		tb.push('pages');
+	}
+
+	if (options.pageIndex != null && options.pageIndex >= 0)
+	{
+		data.page = options.pageIndex;
+	}
+
+	if (options.htmlZoom !== false)
+	{
+		tb.push('zoom');
+	}
+
+	if (options.htmlLayers !== false)
+	{
+		tb.push('layers');
+	}
+
+	if (options.htmlTags !== false)
+	{
+		tb.push('tags');
+	}
+
+	if (tb.length > 0)
+	{
+		if (options.htmlLightbox !== false)
+		{
+			tb.push('lightbox');
+		}
+
+		data.toolbar = tb.join(' ');
+	}
+
+	if (options.htmlTheme && options.htmlTheme !== 'auto')
+	{
+		data['dark-mode'] = options.htmlTheme;
+	}
+
+	if (options.htmlEditLink)
+	{
+		data.edit = options.htmlEditLink;
+	}
+
+	var fit = options.htmlFit !== false;
+
+	var div = '<div class="mxgraph" style="' +
+		(fit ? 'max-width:100%;' : '') +
+		(tb.length > 0 ? 'border:1px solid transparent;' : '') +
+		'" data-mxgraph="' + htmlEntities(JSON.stringify(data)) + '"></div>';
+
+	var scriptTag = '<script type="text/javascript" src="https://viewer.diagrams.net/js/viewer-static.min.js"></script>';
+
+	return '<!--[if IE]><meta http-equiv="X-UA-Compatible" content="IE=5,IE=9" ><![endif]-->\n' +
+		'<!DOCTYPE html>\n<html>\n<head>\n' +
+		'<title>' + htmlEntities(title) + '</title>\n' +
+		'<meta charset="utf-8"/>\n' +
+		'</head>\n<body>\n' + div + '\n' + scriptTag + '\n</body>\n</html>';
 }
 
 //TODO Use canvas to export images if math is not used to speedup export (no capturePage). Requires change to export3.html also
@@ -2663,7 +3111,40 @@ function unwatchFile(filePath)
 	fs.unwatchFile(filePath);
 }
 
-ipcMain.on("rendererReq", async (event, args) => 
+function getLocalFonts()
+{
+	return new Promise((resolve) =>
+	{
+		let cmd;
+
+		if (process.platform === 'win32')
+		{
+			cmd = 'powershell -NoProfile -command "Add-Type -AssemblyName System.Drawing; (New-Object System.Drawing.Text.InstalledFontCollection).Families | ForEach-Object { $_.Name }"';
+		}
+		else
+		{
+			cmd = 'fc-list --format="%{family[0]}\\n"';
+		}
+
+		exec(cmd, {encoding: 'utf8', timeout: 30000}, (err, stdout) =>
+		{
+			if (err)
+			{
+				resolve([]);
+				return;
+			}
+
+			let fonts = stdout.split('\n')
+				.map(f => f.trim())
+				.filter(f => f.length > 0);
+			fonts = [...new Set(fonts)].sort(
+				(a, b) => a.localeCompare(b));
+			resolve(fonts);
+		});
+	});
+}
+
+ipcMain.on("rendererReq", async (event, args) =>
 {
 	if (!validateSender(event.senderFrame)) return null;
 
@@ -2747,6 +3228,9 @@ ipcMain.on("rendererReq", async (event, args) =>
 			break;
 		case 'exit':
 			app.quit();
+			break;
+		case 'getLocalFonts':
+			ret = await getLocalFonts();
 			break;
 		case 'isFullscreen':
 			ret = BrowserWindow.getFocusedWindow().isFullScreen();

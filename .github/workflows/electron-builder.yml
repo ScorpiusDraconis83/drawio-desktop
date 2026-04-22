@@ -23,7 +23,6 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAP_TOKEN }}
       OS_NAME: ${{ matrix.os }}
-      GH_REF: ${{ github.ref }}
     steps:
     - name: Checkout reposistory
       uses: actions/checkout@v4
@@ -37,17 +36,27 @@ jobs:
         ref: release
         path: drawio-dev
         submodules: false
-    - name: Get drawio Tag & Submodules
+    - name: Stage drawio-dev release into public submodule
       run: |
-        cd drawio-dev
-        # Get the current build tag from draw.io
-        export tmp1=${GH_REF/refs\//}
-        export tmp2=${tmp1/\/v/\/diagramly-}
-        export tmp3=${tmp2//\./_}
-        git fetch origin refs/$tmp3:refs/$tmp3 --no-tags
-        git checkout $tmp3 -b tmp-deploy
-        cp src/main/webapp/js/*.min.js ../drawio/src/main/webapp/js/
-        cd ..
+        # Build from the current HEAD of drawio-dev's release branch (checked out
+        # above). We no longer require a matching diagramly-X_Y_Z tag, and the
+        # public drawio submodule can lag its own VERSION/tag behind this.
+        if [ ! -f drawio-dev/VERSION ]; then
+          echo "::error::drawio-dev/VERSION not found on the release branch"
+          exit 1
+        fi
+        if ! grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' drawio-dev/VERSION; then
+          echo "::error::drawio-dev/VERSION has unexpected format: $(cat drawio-dev/VERSION)"
+          exit 1
+        fi
+        echo "Internal drawio-dev VERSION: $(cat drawio-dev/VERSION)"
+        echo "Public drawio submodule VERSION: $(cat drawio/VERSION)"
+        # Copy the built minified JS and the authoritative VERSION into the
+        # public submodule tree. `npm run sync` will then stamp the internal
+        # version into package.json without any changes to sync.cjs — keeping
+        # the public-facing build (which has no drawio-dev) working as-is.
+        cp drawio-dev/src/main/webapp/js/*.min.js drawio/src/main/webapp/js/
+        cp drawio-dev/VERSION drawio/VERSION
         rm -rf drawio-dev
         cd drawio
         rm -rf docs etc src/main/java src/main/webapp/connect src/main/webapp/service-worker* src/main/webapp/workbox-*

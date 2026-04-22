@@ -64,7 +64,7 @@ The `prepare-release` workflow automates:
 2. Click "Run workflow"
 3. Enter:
    - **version:** The release version (e.g., `29.0.4`)
-   - **drawio_ref:** (Optional) Specific tag/commit. Defaults to `v{version}`
+   - **drawio_ref:** (Optional) Specific tag/commit for the public `drawio` submodule. Leave empty to keep the current submodule pin — CI builds source the editor from `drawio-dev`'s release branch, so the public submodule only needs to track what out-of-tree builders should see.
    - **dry_run:** Check to validate without committing
 
 **What happens:**
@@ -262,8 +262,8 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 ### Submodule ref not found
 
-1. Verify the drawio tag/ref exists in the drawio repository
-2. Use `drawio_ref` input to specify correct ref
+1. Verify the drawio tag/ref exists in the public drawio repository
+2. Use `drawio_ref` input to specify the correct ref — or leave it empty to keep the current submodule pin (the CI build workflows source the editor from `drawio-dev`, so they are unaffected by a lagging public pin)
 
 ---
 

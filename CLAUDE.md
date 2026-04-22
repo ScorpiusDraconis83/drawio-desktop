@@ -107,6 +107,8 @@ Tags trigger CI/CD build workflows.
 3. **Build:** `electron-builder` with platform-specific config
 4. **Post-build:** Security fuses applied, Quick Look extension assembled (macOS), notarization (macOS)
 
+> **CI override:** The release build workflows check out the private `jgraph/drawio-dev` repo at its `release` branch, copy the built `*.min.js` **and** `VERSION` into the public `drawio/` submodule tree, then run `npm run sync` as normal. This lets CI ship from an internal release that is ahead of the public `drawio` tag without any change to `sync.cjs`. Out-of-tree builders (who have no access to `drawio-dev`) fall through to the public submodule's `VERSION` as before.
+
 ### Platform Build Commands
 | Command | Target |
 |---------|--------|
@@ -176,7 +178,7 @@ No automated tests. Manual testing documented in `doc/RELEASE_PROCESS.md`:
 
 1. **Recursive clone required** - drawio submodule must be initialized
 2. **Run `npm run sync` before building** - Updates version from submodule
-3. **Version source of truth** - `drawio/VERSION`, not package.json
+3. **Version source of truth** - `drawio/VERSION` for public builds; `drawio-dev/VERSION` is copied over `drawio/VERSION` at CI time so the internal release number wins for packaged builds
 4. **Closed to contributions** - PRs not accepted; maintained by JGraph
 5. **Node 20+ required** - ES6 modules without transpilation
 

@@ -10,7 +10,6 @@ jobs:
     runs-on: windows-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GH_REF: ${{ github.ref }}
     steps:
     - name: Checkout reposistory
       uses: actions/checkout@v4
@@ -24,17 +23,29 @@ jobs:
         ref: release
         path: drawio-dev
         submodules: false
-    - name: Get drawio Tag & Submodules
+    - name: Stage drawio-dev release into public submodule
+      shell: powershell
       run: |
-        cd drawio-dev
-        # Get the current build tag from draw.io
-        $tmp=$Env:GH_REF -replace '/v','/diagramly-' -replace '[.]','_'
-        $ref=$tmp+':'+$tmp
-        git fetch origin $ref --no-tags
-        $tmp=$tmp -replace 'refs/',''
-        git checkout $tmp -b tmp-deploy
-        Copy-Item -Path "src\main\webapp\js\*.min.js"  -Destination "..\drawio\src\main\webapp\js\"
-        cd ..
+        # Build from the current HEAD of drawio-dev's release branch (checked out
+        # above). We no longer require a matching diagramly-X_Y_Z tag, and the
+        # public drawio submodule can lag its own VERSION/tag behind this.
+        if (-not (Test-Path 'drawio-dev\VERSION')) {
+          Write-Host "::error::drawio-dev/VERSION not found on the release branch"
+          exit 1
+        }
+        $internalVersion = (Get-Content 'drawio-dev\VERSION' -Raw).Trim()
+        if ($internalVersion -notmatch '^\d+\.\d+\.\d+$') {
+          Write-Host "::error::drawio-dev/VERSION has unexpected format: $internalVersion"
+          exit 1
+        }
+        Write-Host "Internal drawio-dev VERSION: $internalVersion"
+        Write-Host "Public drawio submodule VERSION: $((Get-Content 'drawio\VERSION' -Raw).Trim())"
+        # Copy the built minified JS and the authoritative VERSION into the
+        # public submodule tree. `npm run sync` will then stamp the internal
+        # version into package.json without any changes to sync.cjs — keeping
+        # the public-facing build (which has no drawio-dev) working as-is.
+        Copy-Item -Path "drawio-dev\src\main\webapp\js\*.min.js" -Destination "drawio\src\main\webapp\js\"
+        Copy-Item -Path "drawio-dev\VERSION" -Destination "drawio\VERSION" -Force
         Remove-Item 'drawio-dev' -Recurse -Force
         cd drawio
         Remove-Item 'docs','etc','src\main\java','src\main\webapp\connect','src\main\webapp\service-worker*','src\main\webapp\workbox-*' -Recurse -Force
@@ -77,7 +88,11 @@ jobs:
     - name: Zip unpacked x64 build
       shell: powershell
       run: |
-        $version = "${{ github.ref }}" -replace 'refs/tags/v', ''
+        # Use package.json.version (set by `npm run sync` from the internal
+        # drawio-dev VERSION) so the zip filename matches the other
+        # electron-builder artifacts in the same release, even if the git tag
+        # that triggered this build differs from the built version.
+        $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
         cd dist
         7z a "draw.io-$version-windows.zip" ".\win-unpacked\*"
 
@@ -99,5 +114,9 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        $version = "${{ github.ref }}" -replace 'refs/tags/v', ''
+        # electron-builder publishes the draft release as v${package.json.version}
+        # — upload to that same release so the zip is grouped with the other
+        # artifacts. Reading from package.json (rather than github.ref) keeps
+        # this correct even if the triggering tag and the built version differ.
+        $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
         gh release upload "v$version" "dist/draw.io-$version-windows.zip" --clobber
