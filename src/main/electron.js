@@ -1683,12 +1683,14 @@ async function mergePdfs(pdfFiles, xml)
 				replace(/\(/g, "\\(").replace(/\)/g, "\\)"));
 		}
 
-		const pdfBytes = await pdfDoc.save();
-		
+		// Forces /ObjStm so the hex-encoded Subject is reachable by the PDF
+		// importer [jgraph/drawio-desktop#2394]
+		const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+
 		return Buffer.from(pdfBytes);
 	}
 
-	try 
+	try
 	{
 		const pdfDoc = await PDFDocument.create();
 		pdfDoc.setCreator('diagrams.net');
