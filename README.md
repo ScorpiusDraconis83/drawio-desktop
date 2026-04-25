@@ -7,6 +7,17 @@ Download built binaries from the [releases section](https://github.com/jgraph/dr
 
 **Can I use this app for free?** Yes, under the apache 2.0 license. If you don't change the code and accept it is provided "as-is", you can use it for any purpose.
 
+Windows installation
+--------------------
+
+Three flavours of Windows download are published on the [releases page](https://github.com/jgraph/drawio-desktop/releases):
+
+- `draw.io-<version>-windows-installer.exe` — NSIS installer. Installs **per-machine** into `Program Files` and **requires administrator privileges**.
+- `draw.io-<version>.msi` — MSI installer. Installs **per-user** into the user's profile and **does not require administrator privileges**. Use this one if you don't have admin rights on your machine.
+- `draw.io-<version>-windows-no-installer.exe` — portable build that runs without any installation (and therefore without admin rights). File-type associations are not registered.
+
+The Microsoft Store (APPX) build is also installable per-user without admin rights via the Store.
+
 Security
 --------
 
