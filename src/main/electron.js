@@ -33,8 +33,8 @@ const disableUpdate = disUpPkg() ||
 						process.env.DRAWIO_DISABLE_UPDATE === 'true' ||
 						process.argv.indexOf('--disable-update') !== -1 ||
 						fs.existsSync('/.flatpak-info'); //This file indicates running in flatpak sandbox
-const silentUpdate = !disableUpdate && (process.env.DRAWIO_SILENT_UPDATE === 'true' ||
-										process.argv.indexOf('--silent-update') !== -1);
+const silentUpdate = !disableUpdate && (process.env.DRAWIO_NO_SILENT_UPDATE !== 'true' &&
+										process.argv.indexOf('--no-silent-update') === -1); // Defaults to silent update if not disabled explicitly
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'error'
 autoUpdater.logger.transports.console.level = 'error'
@@ -1205,6 +1205,36 @@ app.whenReady().then(() =>
 		click: checkForUpdatesFn
 	}
 
+	function setUpdateIntervalFn()
+	{
+		const hours = [24, 48, 72, 168];
+		const currentHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
+		const buttons = hours.map(h => h === 168 ? '1 week' : `${h} hours`);
+		buttons.push('Cancel');
+
+		dialog.showMessageBox(win,
+		{
+			type: 'question',
+			title: 'Update Check Interval',
+			message: 'How often should draw.io check for updates?',
+			detail: `Current interval: ${currentHours === 168 ? '1 week' : currentHours + ' hours'}`,
+			buttons: buttons,
+			defaultId: hours.indexOf(currentHours) >= 0 ? hours.indexOf(currentHours) : hours.indexOf(DEFAULT_UPDATE_CHECK_HOURS),
+			cancelId: buttons.length - 1
+		}).then(result =>
+		{
+			if (result.response < hours.length && store != null)
+			{
+				store.set('updateCheckIntervalHours', hours[result.response]);
+			}
+		});
+	}
+
+	let setUpdateInterval = {
+		label: 'Set Update Check Interval...',
+		click: setUpdateIntervalFn
+	}
+
 	let zoomIn = {
 		label: 'Zoom In',
 		click: zoomInFn
@@ -1239,6 +1269,7 @@ app.whenReady().then(() =>
 	          click() { shell.openExternal('https://github.com/jgraph/drawio-desktop/issues'); }
 			},
 			checkForUpdates,
+			setUpdateInterval,
 	        { type: 'separator' },
 			resetZoom,
 			zoomIn,
@@ -1266,7 +1297,7 @@ app.whenReady().then(() =>
 	    
 	    if (disableUpdate)
 		{
-			template[0].submenu.splice(2, 1);
+			template[0].submenu.splice(2, 2);
 		}
 		
 		const menuBar = menu.buildFromTemplate(template)
@@ -1417,9 +1448,19 @@ app.on('web-contents-created', (event, contents) => {
 	})
 })
 
-autoUpdater.on('error', e => log.error('@error@\n', e))
+autoUpdater.on('error', e =>
+{
+	log.error('@error@\n', e);
+	dialog.showMessageBox(
+	{
+		type: 'error',
+		title: 'Update Error',
+		message: 'An error occurred while updating.',
+		detail: e && e.message ? e.message : String(e)
+	});
+})
 
-autoUpdater.on('update-available', (a, b) =>
+autoUpdater.on('update-available', (info) =>
 {
 	if (silentUpdate) return;
 
@@ -1428,7 +1469,7 @@ autoUpdater.on('update-available', (a, b) =>
 		type: 'question',
 		buttons: ['Ok', 'Cancel', 'Don\'t Ask Again'],
 		title: 'Confirm draw.io Update',
-		message: 'draw.io update available.\n\nWould you like to download and install new version?',
+		message: `draw.io update available (${app.getVersion()} → ${info.version}).\n\nWould you like to download and install new version?`,
 		detail: 'Application will automatically restart to apply update after download',
 	}).then( result =>
 	{
