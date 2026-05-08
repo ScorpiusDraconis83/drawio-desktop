@@ -29,7 +29,43 @@ catch (e)
 	store = null;
 }
 
-const disableUpdate = disUpPkg() || 
+// One-shot migration: detect whether this is a fresh install or an update,
+// so we can seed the drawio Configuration's defaultAdaptiveColors accordingly.
+// 'auto' for fresh installs (matches drawio.com behaviour), 'simple' for
+// updates (preserves what desktop users have been seeing historically).
+// Returns 'auto' / 'simple' / 'none' on the first launch with this code,
+// null on every subsequent launch. Safe to call before app.whenReady().
+function detectInitialAdaptiveColorsDefault()
+{
+	if (store == null) return null;
+
+	const MIGRATION_KEY = 'adaptiveColorsDefaultMigrated';
+
+	if (store.get(MIGRATION_KEY)) return null;
+
+	let hadPriorState = store.size > 0;
+
+	if (!hadPriorState)
+	{
+		try
+		{
+			const lsPath = path.join(app.getPath('userData'), 'Local Storage', 'leveldb');
+			hadPriorState = fs.existsSync(lsPath) && fs.readdirSync(lsPath).length > 0;
+		}
+		catch (e)
+		{
+			// If we can't read userData for any reason, fall through and treat
+			// as a fresh install. The preload guard won't overwrite an existing
+			// explicit user choice, so this is safe.
+		}
+	}
+
+	const mode = hadPriorState ? 'simple' : 'auto';
+	store.set(MIGRATION_KEY, app.getVersion());
+	return mode;
+}
+
+const disableUpdate = disUpPkg() ||
 						process.env.DRAWIO_DISABLE_UPDATE === 'true' ||
 						process.argv.indexOf('--disable-update') !== -1 ||
 						fs.existsSync('/.flatpak-info'); //This file indicates running in flatpak sandbox
@@ -84,6 +120,10 @@ enableSpellCheck = enableSpellCheck != null ? enableSpellCheck : isMac;
 let enableStoreBkp = store != null ? (store.get('enableStoreBkp') != null ? store.get('enableStoreBkp') : true) : false;
 let dialogOpen = false;
 let enablePlugins = false;
+// One-shot value used to seed the drawio Configuration's defaultAdaptiveColors
+// for users running this version for the first time. 'auto' for new installs,
+// 'simple' for updates from a previous desktop version. Null after migration.
+let initialAdaptiveColorsDefault = null;
 const codeDir = path.join(__dirname, '/../../drawio/src/main/webapp');
 const codeUrl = url.pathToFileURL(codeDir).href.replace(/\/.\:\//, str => str.toUpperCase()); // Fix for windows drive letter
 // Production app uses asar archive, so we need to go up two more level. It's extra cautious since asar is read-only anyway.
@@ -172,6 +212,13 @@ function createWindow (opt = {})
 		lastWinSize[1] = 500;
 	}
 
+	const additionalArguments = [];
+
+	if (initialAdaptiveColorsDefault != null)
+	{
+		additionalArguments.push('--initial-adaptive-colors=' + initialAdaptiveColorsDefault);
+	}
+
 	let options = Object.assign(
 	{
 		backgroundColor: '#FFF',
@@ -184,7 +231,8 @@ function createWindow (opt = {})
 			preload: `${__dirname}/electron-preload.js`,
 			spellcheck: enableSpellCheck,
 			contextIsolation: true,
-			disableBlinkFeatures: 'Auxclick' // Is this needed?
+			disableBlinkFeatures: 'Auxclick', // Is this needed?
+			additionalArguments: additionalArguments
 		}
 	}, opt)
 	
@@ -382,6 +430,10 @@ function isPluginsEnabled()
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() =>
 {
+	// Determine initial defaultAdaptiveColors for the drawio Configuration
+	// before any window is created so the value is passed to the preload.
+	initialAdaptiveColorsDefault = detectInitialAdaptiveColorsDefault();
+
 	// Enforce our CSP on all contents
 	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
 	{
