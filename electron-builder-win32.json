@@ -14,8 +14,8 @@
       "provider": "github"
   },
   "win": {
-    "publisherName": ["JGraph Ltd", "draw.io Ltd"],
     "signtoolOptions": {
+      "publisherName": ["JGraph Ltd", "draw.io Ltd"],
       "sign": "build/sign-trusted.mjs"
     },
     "target": [
