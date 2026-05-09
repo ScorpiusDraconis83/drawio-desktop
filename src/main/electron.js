@@ -71,6 +71,7 @@ const disableUpdate = disUpPkg() ||
 						fs.existsSync('/.flatpak-info'); //This file indicates running in flatpak sandbox
 const silentUpdate = !disableUpdate && (process.env.DRAWIO_NO_SILENT_UPDATE !== 'true' &&
 										process.argv.indexOf('--no-silent-update') === -1); // Defaults to silent update if not disabled explicitly
+let manualUpdateCheck = false; // Set when the user clicks "Check for updates" so the silent-update path can still acknowledge them
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'error'
 autoUpdater.logger.transports.console.level = 'error'
@@ -1100,22 +1101,24 @@ app.whenReady().then(() =>
 
     let updateNoAvailAdded = false;
     
-	function checkForUpdatesFn(e) 
-	{ 
-		if (e != null && e.senderFrame != null && 
+	function checkForUpdatesFn(e)
+	{
+		if (e != null && e.senderFrame != null &&
 			!validateSender(e.senderFrame)) return null;
 
+		manualUpdateCheck = true;
 		autoUpdater.checkForUpdates();
 
 		if (store != null)
 		{
 			store.set('dontCheckUpdates', false);
 		}
-		
-		if (!updateNoAvailAdded) 
+
+		if (!updateNoAvailAdded)
 		{
 			updateNoAvailAdded = true;
 			autoUpdater.on('update-not-available', (info) => {
+				manualUpdateCheck = false;
 				dialog.showMessageBox(
 					{
 						type: 'info',
@@ -1421,6 +1424,7 @@ app.on('web-contents-created', (event, contents) => {
 
 autoUpdater.on('error', e =>
 {
+	manualUpdateCheck = false;
 	log.error('@error@\n', e);
 	dialog.showMessageBox(
 	{
@@ -1433,7 +1437,24 @@ autoUpdater.on('error', e =>
 
 autoUpdater.on('update-available', (info) =>
 {
-	if (silentUpdate) return;
+	if (silentUpdate)
+	{
+		if (manualUpdateCheck)
+		{
+			manualUpdateCheck = false;
+			dialog.showMessageBox(
+			{
+				type: 'info',
+				title: 'draw.io Update',
+				message: `Downloading draw.io ${info.version} in the background.`,
+				detail: 'It will be installed automatically the next time you quit the application.'
+			});
+		}
+
+		return;
+	}
+
+	manualUpdateCheck = false;
 
 	dialog.showMessageBox(
 	{
