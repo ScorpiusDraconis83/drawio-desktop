@@ -82,10 +82,16 @@ jobs:
         "TRUSTED_SIGNING_DLIB_PATH=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append
 
         # Locate signtool.exe (Windows SDK is pre-installed on windows-latest).
+        # Microsoft explicitly notes that the 10.0.20348 SDK (Windows Server 2022) is
+        # not compatible with the Artifact Signing dlib, so filter it out before
+        # picking the highest version. On today's windows-latest the highest SDK is
+        # well above 20348 anyway; this is purely defensive against future runner
+        # image changes. See: https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations
         $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\10\.0\.20348\.' } |
             Sort-Object FullName -Descending |
             Select-Object -First 1 -ExpandProperty FullName
-        if (-not $signtool) { throw "signtool.exe not found in Windows SDK" }
+        if (-not $signtool) { throw "signtool.exe not found in Windows SDK (or only the unsupported 10.0.20348 was available)" }
         "SIGNTOOL_PATH=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append
 
         Write-Host "Trusted Signing dlib: $dlib"
