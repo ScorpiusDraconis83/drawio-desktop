@@ -65,8 +65,12 @@ jobs:
       run: |
         # Download Microsoft.Trusted.Signing.Client NuGet package and extract dlib.
         # Pinned version keeps the build reproducible; bump deliberately if needed.
+        # Note: this package is now unlisted on NuGet — Microsoft's successor is
+        # Microsoft.ArtifactSigning.Client. 1.0.95 is the last released version of
+        # the original package; it still resolves by exact version URL. Migration
+        # to the renamed package is tracked as a cleanup task.
         $package = "Microsoft.Trusted.Signing.Client"
-        $version = "1.0.86"
+        $version = "1.0.95"
         $url = "https://www.nuget.org/api/v2/package/$package/$version"
         $nupkg = Join-Path $env:TEMP "$package.zip"
         Invoke-WebRequest -Uri $url -OutFile $nupkg
