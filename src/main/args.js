@@ -204,7 +204,41 @@ export function parseDrawioArgs(argv)
 
 		if (token.startsWith('-'))
 		{
-			const def = SHORT_MAP.get(token) || LONG_MAP.get(token);
+			let def = SHORT_MAP.get(token) || LONG_MAP.get(token);
+
+			// Combined short flags: -abc → -a -b -c, or -fpng → -f png (value attached).
+			// Only applies when the token is a single-dash multi-char short cluster that
+			// doesn't itself match a known flag. Mirrors commander.js behaviour, which
+			// pre-30.0.0 drawio relied on (e.g. Makefiles using `drawio -xa --crop ...`).
+			if (!def && !token.startsWith('--') && token.length > 2)
+			{
+				let allRecognized = true;
+				let j = 1;
+
+				while (j < token.length)
+				{
+					const shortDef = SHORT_MAP.get('-' + token[j]);
+					if (!shortDef) { allRecognized = false; break; }
+
+					if (shortDef.takesValue)
+					{
+						// Attached-value form: -fpng → -f with value "png".
+						applyValue(opts, shortDef, token.slice(j + 1));
+						j = token.length;
+						break;
+					}
+
+					opts[shortDef.key] = true;
+					j++;
+				}
+
+				if (allRecognized)
+				{
+					i++;
+					continue;
+				}
+				// Unknown letter in the cluster — drop the whole token (existing behaviour).
+			}
 
 			if (!def)
 			{
