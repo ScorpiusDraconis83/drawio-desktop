@@ -3533,7 +3533,7 @@ ipcMain.on("rendererReq", async (event, args) =>
 			ret = await getLocalFonts();
 			break;
 		case 'isFullscreen':
-			ret = BrowserWindow.getFocusedWindow().isFullScreen();
+			ret = BrowserWindow.getFocusedWindow()?.isFullScreen() ?? false;
 			break;
 		};
 
