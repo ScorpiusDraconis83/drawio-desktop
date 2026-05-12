@@ -198,6 +198,47 @@ function blessPath(p)
 	}
 	catch (e) {} // Defensive: blessPath must never throw into a caller's flow.
 }
+
+// One-shot migration: on first launch with the blessedPaths fix, the renderer's
+// drawio "Open Recent" list (in localStorage at key '.recent') contains paths
+// that were opened in prior versions and so were never blessed. Without this
+// migration, autosave would break for every legacy recent file until the user
+// re-opened it via the file picker. Trust-on-first-use is acceptable here: any
+// attacker who could have poisoned localStorage in a prior version already had
+// the broader (pre-fix) attack surface, so this migration does not widen it.
+const BLESSED_PATHS_MIGRATION_KEY = 'blessedPathsLegacyMigrated';
+
+async function migrateLegacyRecentsOnce(webContents)
+{
+	if (store == null) return;
+	if (store.get(BLESSED_PATHS_MIGRATION_KEY)) return;
+
+	try
+	{
+		const recentsJson = await webContents.executeJavaScript(
+			'try { localStorage.getItem(".recent") } catch (e) { null }');
+
+		if (typeof recentsJson === 'string')
+		{
+			const recents = JSON.parse(recentsJson);
+
+			if (Array.isArray(recents))
+			{
+				for (const entry of recents)
+				{
+					if (entry != null && typeof entry.id === 'string' &&
+						entry.id && fs.existsSync(entry.id))
+					{
+						blessPath(entry.id);
+					}
+				}
+			}
+		}
+	}
+	catch (e) {} // Migration is best-effort; never block app startup.
+
+	try { store.set(BLESSED_PATHS_MIGRATION_KEY, true); } catch (e) {}
+}
 let appZoom = 1;
 // Disabled by default
 let isGoogleFontsEnabled = store != null ? (store.get('isGoogleFontsEnabled') != null? store.get('isGoogleFontsEnabled') : false) : false;
@@ -1121,9 +1162,11 @@ app.whenReady().then(() =>
     			parsedArgs = [firstWinFilePath];
 			}
 		}
-    	
+
     	firstWinLoaded = true;
-    	
+
+    	migrateLegacyRecentsOnce(win.webContents);
+
         win.webContents.zoomFactor = appZoom;
         win.webContents.setVisualZoomLevelLimits(1, appZoom);
 		loadFinished();
