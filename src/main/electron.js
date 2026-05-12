@@ -134,7 +134,50 @@ const appBaseDir = path.join(__dirname, __dirname.endsWith(path.join('resources'
 // command line). The renderer is not allowed to write to anything else, even via
 // IPC handlers that pass validateSender. Symlinks are resolved before insertion so
 // the realpath of a blessed path is what's actually authorised.
+//
+// Persisted across sessions via electron-store so drawio's "Open Recent" (which
+// fakes an args-obj entirely in the renderer) still works — recent files are
+// only added to the menu after a successful open via trusted UI, so a path in
+// the persisted set is one we previously authorised.
+const BLESSED_PATHS_KEY = 'blessedPaths';
+const BLESSED_PATHS_MAX = 500;
 const blessedPaths = new Set();
+
+if (store != null)
+{
+	try
+	{
+		const persisted = store.get(BLESSED_PATHS_KEY);
+
+		if (Array.isArray(persisted))
+		{
+			for (const p of persisted)
+			{
+				if (typeof p === 'string' && p) blessedPaths.add(p);
+			}
+		}
+	}
+	catch (e) {} // Bad store contents — start with an empty set.
+}
+
+function persistBlessedPaths()
+{
+	if (store == null) return;
+
+	try
+	{
+		let arr = Array.from(blessedPaths);
+
+		// Cap to keep the store bounded; newest insertions win.
+		if (arr.length > BLESSED_PATHS_MAX)
+		{
+			arr = arr.slice(arr.length - BLESSED_PATHS_MAX);
+		}
+
+		store.set(BLESSED_PATHS_KEY, arr);
+	}
+	catch (e) {}
+}
 
 function blessPath(p)
 {
@@ -150,6 +193,8 @@ function blessPath(p)
 			blessedPaths.add(fs.realpathSync(resolved));
 		}
 		catch (e) {} // Path may not exist yet (Save As) — that's fine.
+
+		persistBlessedPaths();
 	}
 	catch (e) {} // Defensive: blessPath must never throw into a caller's flow.
 }
