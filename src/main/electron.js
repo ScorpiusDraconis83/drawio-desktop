@@ -1715,15 +1715,18 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 	var outOffset = 0;
 	var data = text;
 	var dataLen = isDpi? 9 : key.length + data.length + 1; //we add 1 zeros with non-compressed data, for pHYs it's 2 of 4-byte-int + 1 byte
-	
+
 	//prepare compressed data to get its size
 	if (compressed)
 	{
-		data = zlib.deflateRawSync(encodeURIComponent(text));
+		// PNG zTXt requires an RFC 1950 zlib datastream, not raw deflate
+		// [jgraph/drawio-desktop#2425]
+		data = zlib.deflateSync(encodeURIComponent(text));
 		dataLen = key.length + data.length + 2; //we add 2 zeros with compressed data
 	}
-	
-	var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 4); //4 is the header size "zTXt", "tEXt" or "pHYs"
+
+	// 12 = chunk framing overhead: length(4) + type(4) + CRC(4)
+	var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 12);
 	
 	try
 	{
@@ -1762,10 +1765,12 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 				// Insert zTXt chunk before IDAT chunk
 				outBuff.writeInt32BE(dataLen, outOffset);
 				outOffset += 4;
-				
+
 				var typeSignature = isDpi? 'pHYs' : (compressed ? "zTXt" : "tEXt");
 				outBuff.write(typeSignature, outOffset);
-				
+
+				// CRC covers chunk type + chunk data — start of range is the type field
+				var crcStart = outOffset;
 				outOffset += 4;
 
 				if (isDpi)
@@ -1776,11 +1781,6 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 					outBuff.writeInt32BE(dpm, outOffset + 4);
 					outBuff.writeInt8(1, outOffset + 8);
 					outOffset += 9;
-
-					data = Buffer.allocUnsafe(9);
-					data.writeInt32BE(dpm, 0);
-					data.writeInt32BE(dpm, 4);
-					data.writeInt8(1, 8);
 				}
 				else
 				{
@@ -1797,15 +1797,14 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 					}
 					else
 					{
-						outBuff.write(data, outOffset);	
+						outBuff.write(data, outOffset);
 					}
 
-					outOffset += data.length;				
+					outOffset += data.length;
 				}
 
 				var crcVal = 0xffffffff;
-				crcVal = crc.crcjam(typeSignature, crcVal);
-				crcVal = crc.crcjam(data, crcVal);
+				crcVal = crc.crcjam(outBuff.subarray(crcStart, outOffset), crcVal);
 
 				// CRC
 				outBuff.writeInt32BE(crcVal ^ 0xffffffff, outOffset);
@@ -1936,7 +1935,21 @@ function readPngXml(buffer)
 				{
 					var dataStart = keyEnd + 2; // Skip null + compression method
 					var compressed = buffer.subarray(dataStart, offset + length);
-					return decodeURIComponent(zlib.inflateRawSync(compressed).toString());
+					var inflated;
+
+					try
+					{
+						inflated = zlib.inflateSync(compressed);
+					}
+					catch (e)
+					{
+						// Fallback for PNGs produced by the pre-fix CLI which
+						// wrote raw deflate instead of zlib datastream
+						// [jgraph/drawio-desktop#2425]
+						inflated = zlib.inflateRawSync(compressed);
+					}
+
+					return decodeURIComponent(inflated.toString());
 				}
 				else
 				{
