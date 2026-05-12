@@ -430,6 +430,74 @@ describe('--html-link-color and --html-edit-link', () =>
 	});
 });
 
+// ─── Combined short flags (commander.js compat) ──────────────────────────────
+// Pre-30.0.0, drawio used commander.js, which expands stacked short booleans
+// (`-xa` → `-x -a`) and attached short-flag values (`-fpng` → `-f png`).
+// Real-world Makefiles (e.g. jgraph/drawio-desktop#2426) depend on this.
+
+describe('combined short flags', () =>
+{
+	test('-xa expands to -x -a (stacked booleans)', () =>
+	{
+		const { opts } = parse(['-xa']);
+		assert.equal(opts.export, true);
+		assert.equal(opts.allPages, true);
+	});
+
+	test('-xa --crop -o file matches the Makefile scenario from issue #2426', () =>
+	{
+		const { opts, args } = parse(['schematy.drawio', '-xa', '--crop', '-o', 'out.pdf']);
+		assert.equal(opts.export, true);
+		assert.equal(opts.allPages, true);
+		assert.equal(opts.crop, true);
+		assert.equal(opts.output, 'out.pdf');
+		assert.equal(args[0], 'schematy.drawio');
+	});
+
+	test('-cke expands three booleans', () =>
+	{
+		const { opts } = parse(['-cke']);
+		assert.equal(opts.create, true);
+		assert.equal(opts.check, true);
+		assert.equal(opts.embedDiagram, true);
+	});
+
+	test('-fpng treats trailing chars as value', () =>
+	{
+		const { opts } = parse(['-fpng']);
+		assert.equal(opts.format, 'png');
+	});
+
+	test('-xfpng combines boolean -x with value-bearing -f', () =>
+	{
+		const { opts } = parse(['-xfpng']);
+		assert.equal(opts.export, true);
+		assert.equal(opts.format, 'png');
+	});
+
+	test('-q85 treats 85 as the quality value', () =>
+	{
+		const { opts } = parse(['-q85']);
+		assert.equal(opts.quality, 85);
+	});
+
+	test('recognized prefix is applied, unknown trailing letters ignored', () =>
+	{
+		// Pre-30.0.0 drawio used commander with .allowUnknownOption(); unknown
+		// letters in a cluster were silently skipped, not treated as a fatal error.
+		const { opts } = parse(['-xZ']);
+		assert.equal(opts.export, true);
+	});
+
+	test('clustered short does not consume the next positional', () =>
+	{
+		const { opts, args } = parse(['-xa', 'input.drawio']);
+		assert.equal(opts.export, true);
+		assert.equal(opts.allPages, true);
+		assert.equal(args[0], 'input.drawio');
+	});
+});
+
 // ─── Combined options ────────────────────────────────────────────────────────
 
 describe('combined export scenario', () =>
