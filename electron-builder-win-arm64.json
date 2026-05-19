@@ -14,6 +14,10 @@
       "provider": "github"
   },
   "win": {
+    "signtoolOptions": {
+      "publisherName": ["JGraph Ltd", "draw.io Ltd"],
+      "sign": "build/sign-trusted.mjs"
+    },
     "target": [
       {
           "target": "nsis",
@@ -40,7 +44,7 @@
   "portable": {
     "artifactName": "${productName}-arm64-${version}-windows-arm64-no-installer.${ext}"
   },
-  "afterPack": "build/fuses.cjs",
+  "afterPack": "build/fuses.mjs",
   "fileAssociations": [
 	  {
 	  	"ext": "drawio",

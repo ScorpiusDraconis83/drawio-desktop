@@ -7,18 +7,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ github.event.release.tag_name }}
     steps:
-    - name: Generate Hashes
-      uses: MCJack123/ghaction-generate-release-hashes@v1
-      with:
-        hash-type: sha256
-        file-name: hashes.txt
-    - name: Upload Hashes to release
-      uses: svenstaro/upload-release-action@v2
-      with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: hashes.txt
-        overwrite: true
-        asset_name: Files-SHA256-Hashes.txt
-        tag: ${{ github.ref }}
-
+    - name: Generate and upload SHA256 hashes
+      run: |
+        # Download every asset attached to this release, compute SHA256 hashes,
+        # and upload the result back to the same release as
+        # Files-SHA256-Hashes.txt. Excludes any pre-existing hash file so a
+        # re-run does not re-hash its own previous output.
+        mkdir release-assets
+        cd release-assets
+        gh release download "$TAG" --repo "$GITHUB_REPOSITORY"
+        find . -maxdepth 1 -type f ! -name 'Files-SHA256-Hashes.txt' -print0 \
+          | xargs -0 sha256sum > ../Files-SHA256-Hashes.txt
+        cd ..
+        gh release upload "$TAG" Files-SHA256-Hashes.txt \
+          --repo "$GITHUB_REPOSITORY" --clobber

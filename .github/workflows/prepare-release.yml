@@ -42,14 +42,14 @@ jobs:
           echo "VERSION=${{ inputs.version }}" >> $GITHUB_ENV
           
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: recursive
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           check-latest: true
@@ -225,7 +225,7 @@ jobs:
           npm outdated > outdated-report.txt 2>&1 || true
           
       - name: Upload audit artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: release-evidence-v${{ env.VERSION }}
           path: |

@@ -7,12 +7,12 @@ import {Menu as menu, shell, dialog, session, screen,
 import crc from 'crc';
 import zlib from 'zlib';
 import log from'electron-log';
-import { program } from 'commander';
+import { parseDrawioArgs, formatHelp, validFormatRegExp as validFormatRegExpImport } from './args.js';
 import elecUpPkg from 'electron-updater';
 const {autoUpdater} = elecUpPkg;
 import {PDFDocument} from '@cantoo/pdf-lib';
 import Store from 'electron-store';
-import ProgressBar from 'electron-progressbar';
+import ProgressBar from './progress-bar.js';
 import contextMenu from 'electron-context-menu';
 import {spawn, exec} from 'child_process';
 import {disableUpdate as disUpPkg} from './disableUpdate.js';
@@ -29,16 +29,54 @@ catch (e)
 	store = null;
 }
 
-const disableUpdate = disUpPkg() || 
+// One-shot migration: detect whether this is a fresh install or an update,
+// so we can seed the drawio Configuration's defaultAdaptiveColors accordingly.
+// 'auto' for fresh installs (matches drawio.com behaviour), 'simple' for
+// updates (preserves what desktop users have been seeing historically).
+// Returns 'auto' / 'simple' / 'none' on the first launch with this code,
+// null on every subsequent launch. Safe to call before app.whenReady().
+function detectInitialAdaptiveColorsDefault()
+{
+	if (store == null) return null;
+
+	const MIGRATION_KEY = 'adaptiveColorsDefaultMigrated';
+
+	if (store.get(MIGRATION_KEY)) return null;
+
+	let hadPriorState = store.size > 0;
+
+	if (!hadPriorState)
+	{
+		try
+		{
+			const lsPath = path.join(app.getPath('userData'), 'Local Storage', 'leveldb');
+			hadPriorState = fs.existsSync(lsPath) && fs.readdirSync(lsPath).length > 0;
+		}
+		catch (e)
+		{
+			// If we can't read userData for any reason, fall through and treat
+			// as a fresh install. The preload guard won't overwrite an existing
+			// explicit user choice, so this is safe.
+		}
+	}
+
+	const mode = hadPriorState ? 'simple' : 'auto';
+	store.set(MIGRATION_KEY, app.getVersion());
+	return mode;
+}
+
+const disableUpdate = disUpPkg() ||
 						process.env.DRAWIO_DISABLE_UPDATE === 'true' ||
 						process.argv.indexOf('--disable-update') !== -1 ||
 						fs.existsSync('/.flatpak-info'); //This file indicates running in flatpak sandbox
-const silentUpdate = !disableUpdate && (process.env.DRAWIO_SILENT_UPDATE === 'true' ||
-										process.argv.indexOf('--silent-update') !== -1);
+const silentUpdate = !disableUpdate && (process.env.DRAWIO_NO_SILENT_UPDATE !== 'true' &&
+										process.argv.indexOf('--no-silent-update') === -1); // Defaults to silent update if not disabled explicitly
+let manualUpdateCheck = false; // Set when the user clicks "Check for updates" so the manual flow stays interactive even when silentUpdate is on
 autoUpdater.logger = log
 autoUpdater.logger.transports.file.level = 'error'
 autoUpdater.logger.transports.console.level = 'error'
-autoUpdater.autoDownload = silentUpdate
+// autoDownload is always false: we trigger downloadUpdate() explicitly so silent vs. interactive paths can branch on manualUpdateCheck
+autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = silentUpdate
 
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
@@ -84,11 +122,124 @@ enableSpellCheck = enableSpellCheck != null ? enableSpellCheck : isMac;
 let enableStoreBkp = store != null ? (store.get('enableStoreBkp') != null ? store.get('enableStoreBkp') : true) : false;
 let dialogOpen = false;
 let enablePlugins = false;
+// One-shot value used to seed the drawio Configuration's defaultAdaptiveColors
+// for users running this version for the first time. 'auto' for new installs,
+// 'simple' for updates from a previous desktop version. Null after migration.
+let initialAdaptiveColorsDefault = null;
 const codeDir = path.join(__dirname, '/../../drawio/src/main/webapp');
 const codeUrl = url.pathToFileURL(codeDir).href.replace(/\/.\:\//, str => str.toUpperCase()); // Fix for windows drive letter
 // Production app uses asar archive, so we need to go up two more level. It's extra cautious since asar is read-only anyway.
-const appBaseDir = path.join(__dirname, __dirname.endsWith(path.join('resources', 'app.asar', 'src', 'main')) ? 
+const appBaseDir = path.join(__dirname, __dirname.endsWith(path.join('resources', 'app.asar', 'src', 'main')) ?
 								'/../../../../' : '/../../');
+// Paths the user has authorised through trusted UI (file picker, file association,
+// command line). The renderer is not allowed to write to anything else, even via
+// IPC handlers that pass validateSender. Symlinks are resolved before insertion so
+// the realpath of a blessed path is what's actually authorised.
+//
+// Persisted across sessions via electron-store so drawio's "Open Recent" (which
+// fakes an args-obj entirely in the renderer) still works — recent files are
+// only added to the menu after a successful open via trusted UI, so a path in
+// the persisted set is one we previously authorised.
+const BLESSED_PATHS_KEY = 'blessedPaths';
+const BLESSED_PATHS_MAX = 500;
+const blessedPaths = new Set();
+
+if (store != null)
+{
+	try
+	{
+		const persisted = store.get(BLESSED_PATHS_KEY);
+
+		if (Array.isArray(persisted))
+		{
+			for (const p of persisted)
+			{
+				if (typeof p === 'string' && p) blessedPaths.add(p);
+			}
+		}
+	}
+	catch (e) {} // Bad store contents — start with an empty set.
+}
+
+function persistBlessedPaths()
+{
+	if (store == null) return;
+
+	try
+	{
+		let arr = Array.from(blessedPaths);
+
+		// Cap to keep the store bounded; newest insertions win.
+		if (arr.length > BLESSED_PATHS_MAX)
+		{
+			arr = arr.slice(arr.length - BLESSED_PATHS_MAX);
+		}
+
+		store.set(BLESSED_PATHS_KEY, arr);
+	}
+	catch (e) {}
+}
+
+function blessPath(p)
+{
+	if (typeof p !== 'string' || !p) return;
+
+	try
+	{
+		const resolved = path.resolve(p);
+		blessedPaths.add(resolved);
+
+		try
+		{
+			blessedPaths.add(fs.realpathSync(resolved));
+		}
+		catch (e) {} // Path may not exist yet (Save As) — that's fine.
+
+		persistBlessedPaths();
+	}
+	catch (e) {} // Defensive: blessPath must never throw into a caller's flow.
+}
+
+// One-shot migration: on first launch with the blessedPaths fix, the renderer's
+// drawio "Open Recent" list (in localStorage at key '.recent') contains paths
+// that were opened in prior versions and so were never blessed. Without this
+// migration, autosave would break for every legacy recent file until the user
+// re-opened it via the file picker. Trust-on-first-use is acceptable here: any
+// attacker who could have poisoned localStorage in a prior version already had
+// the broader (pre-fix) attack surface, so this migration does not widen it.
+const BLESSED_PATHS_MIGRATION_KEY = 'blessedPathsLegacyMigrated';
+
+async function migrateLegacyRecentsOnce(webContents)
+{
+	if (store == null) return;
+	if (store.get(BLESSED_PATHS_MIGRATION_KEY)) return;
+
+	try
+	{
+		const recentsJson = await webContents.executeJavaScript(
+			'try { localStorage.getItem(".recent") } catch (e) { null }');
+
+		if (typeof recentsJson === 'string')
+		{
+			const recents = JSON.parse(recentsJson);
+
+			if (Array.isArray(recents))
+			{
+				for (const entry of recents)
+				{
+					if (entry != null && typeof entry.id === 'string' &&
+						entry.id && fs.existsSync(entry.id))
+					{
+						blessPath(entry.id);
+					}
+				}
+			}
+		}
+	}
+	catch (e) {} // Migration is best-effort; never block app startup.
+
+	try { store.set(BLESSED_PATHS_MIGRATION_KEY, true); } catch (e) {}
+}
 let appZoom = 1;
 // Disabled by default
 let isGoogleFontsEnabled = store != null ? (store.get('isGoogleFontsEnabled') != null? store.get('isGoogleFontsEnabled') : false) : false;
@@ -134,8 +285,11 @@ catch(e)
 //app.enableSandbox(); // This maybe the reason snap stopped working
 
 // Only allow request from the app code itself
-function validateSender (frame) 
+function validateSender (frame)
 {
+	// senderFrame may be null if the frame has navigated or been destroyed
+	// before the IPC handler runs (documented behaviour on IpcMainEvent).
+	if (frame == null) return false;
 	return frame.url.replace(/\/.\:\//, str => str.toUpperCase()).startsWith(codeUrl);
 }
 
@@ -172,6 +326,13 @@ function createWindow (opt = {})
 		lastWinSize[1] = 500;
 	}
 
+	const additionalArguments = [];
+
+	if (initialAdaptiveColorsDefault != null)
+	{
+		additionalArguments.push('--initial-adaptive-colors=' + initialAdaptiveColorsDefault);
+	}
+
 	let options = Object.assign(
 	{
 		backgroundColor: '#FFF',
@@ -184,7 +345,8 @@ function createWindow (opt = {})
 			preload: `${__dirname}/electron-preload.js`,
 			spellcheck: enableSpellCheck,
 			contextIsolation: true,
-			disableBlinkFeatures: 'Auxclick' // Is this needed?
+			disableBlinkFeatures: 'Auxclick', // Is this needed?
+			additionalArguments: additionalArguments
 		}
 	}, opt)
 	
@@ -382,6 +544,10 @@ function isPluginsEnabled()
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() =>
 {
+	// Determine initial defaultAdaptiveColors for the drawio Configuration
+	// before any window is created so the value is passed to the preload.
+	initialAdaptiveColorsDefault = detectInitialAdaptiveColorsDefault();
+
 	// Enforce our CSP on all contents
 	session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
 	{
@@ -443,106 +609,15 @@ app.whenReady().then(() =>
 	})
 	
     let argv = process.argv
-    
+
     // https://github.com/electron/electron/issues/4690#issuecomment-217435222
     if (process.defaultApp != true)
     {
         argv.unshift(null)
     }
 
-	var validFormatRegExp = /^(pdf|svg|png|jpeg|jpg|xml|html)$/;
-	var themeRegExp = /^(dark|light)$/;
-	var linkTargetRegExp = /^(auto|new-win|same-win)$/;
-	var htmlThemeRegExp = /^(dark|light|auto)$/;
-	var htmlLinkTargetRegExp = /^(auto|blank|self)$/;
-	function parseBool(val) { return val === 'true'; }
-	
-	function argsRange(val)
-	{
-		return val.split('..').map(n => parseInt(n, 10) - 1);
-	}
-	
-	try
-	{
-		program.allowExcessArguments();
-		program
-	        .version(app.getVersion())
-	        .usage('[options] <input file/folder>')
-			.argument('[input file/folder]', 'input drawio file or a folder with drawio files')
-	        .allowUnknownOption() //-h and --help are considered unknown!!
-	        .option('-c, --create', 'creates a new empty file if no file is passed')
-	        .option('-k, --check', 'does not overwrite existing files')
-	        .option('-x, --export', 'export the input file/folder based on the given options')
-	        .option('-r, --recursive', 'for a folder input, recursively convert all files in sub-folders also')
-	        .option('-o, --output <output file/folder>', 'specify the output file/folder. If omitted, the input file name is used for output with the specified format as extension')
-	        .option('-f, --format <format>',
-			    'if output file name extension is specified, this option is ignored (file type is determined from output extension, possible export formats are pdf, png, jpg, svg, xml, and html)',
-			    validFormatRegExp, 'pdf')
-			.option('-q, --quality <quality>',
-				'output image quality for JPEG (default: 90)', parseInt)
-			.option('-t, --transparent',
-				'set transparent background for PNG')
-			.option('-e, --embed-diagram',
-				'includes a copy of the diagram (for PNG, SVG and PDF formats only)')
-			.option('--embed-svg-images',
-				'Embed Images in SVG file (for SVG format only)')
-			.option('--embed-svg-fonts <true/false>',
-				'Embed Fonts in SVG file (for SVG format only). Default is true', parseBool, true)
-			.option('-b, --border <border>',
-				'sets the border width around the diagram (default: 0)', parseInt)
-			.option('-s, --scale <scale>',
-				'scales the diagram size', parseFloat)
-			.option('--width <width>',
-				'fits the generated image/pdf into the specified width, preserves aspect ratio.', parseInt)
-			.option('--height <height>',
-				'fits the generated image/pdf into the specified height, preserves aspect ratio.', parseInt)
-			.option('--crop',
-				'crops PDF to diagram size')
-			.option('-a, --all-pages',
-				'export all pages (for PDF and HTML formats)')
-			.option('-p, --page-index <pageIndex>',
-				'selects a specific page (1-based); if not specified and the format is an image, the first page is selected', (i) => parseInt(i) - 1)
-			.option('-l, --layers <comma separated layer indexes>',
-				'selects which layers to export (applies to all pages), if not specified, all layers are selected')
-			.option('-g, --page-range <from>..<to>',
-				'selects a page range (1-based, for PDF format only)', argsRange)
-			.option('-u, --uncompressed',
-				'Uncompressed XML output (for XML and SVG format only)')
-			.option('-z, --zoom <zoom>',
-				'scales the application interface', parseFloat)
-			.option('--svg-theme <theme>',
-				'Theme of the exported SVG image (dark, light, auto [default])', themeRegExp, 'auto')
-			.option('--svg-links-target <target>',
-				'Target of links in the exported SVG image (auto [default], new-win, same-win)', linkTargetRegExp, 'auto')
-			.option('--enable-plugins',
-				'Enable Plugins')
-			.option('--html-theme <theme>',
-				'Theme of the HTML viewer (dark, light, auto [default])', htmlThemeRegExp, 'auto')
-			.option('--html-zoom <true/false>',
-				'Show zoom controls in HTML viewer (default: true)', parseBool, true)
-			.option('--html-lightbox <true/false>',
-				'Enable lightbox in HTML viewer (default: true)', parseBool, true)
-			.option('--html-layers <true/false>',
-				'Show layers toolbar in HTML viewer (default: true)', parseBool, true)
-			.option('--html-tags <true/false>',
-				'Show tags toolbar in HTML viewer (default: true)', parseBool, true)
-			.option('--html-fit <true/false>',
-				'Responsive fit to container width in HTML viewer (default: true)', parseBool, true)
-			.option('--html-link-target <target>',
-				'Link target in HTML viewer (auto [default], blank, self)', htmlLinkTargetRegExp, 'auto')
-			.option('--html-link-color <color>',
-				'Link highlight color in HTML viewer (default: #0000ff)')
-			.option('--html-edit-link <url>',
-				'URL for edit button in HTML viewer')
-	        .parse(argv)
-	}
-	catch(e)
-	{
-		//On parse error, return [exit and commander will show the error message]
-		return;
-	}
-	
-	var options = program.opts();
+	var validFormatRegExp = validFormatRegExpImport;
+	var { opts: options, args: parsedArgs } = parseDrawioArgs(argv);
 	enablePlugins = options.enablePlugins;
 
 	if (options.zoom != null)
@@ -669,7 +744,7 @@ app.whenReady().then(() =>
 				expArgs.extras = JSON.stringify({layers: options.layers.split(',')});
 			}
 
-			var paths = program.args;
+			var paths = parsedArgs;
 			
 			// Remove --no-sandbox arg from the paths
 			if (Array.isArray(paths))
@@ -850,7 +925,7 @@ app.whenReady().then(() =>
 														var counter = 0;
 														var realFileName = outFileName;
 
-														if (program.rawArgs.indexOf('-k') > -1 || program.rawArgs.indexOf('--check') > -1)
+														if (options.check)
 														{
 															while (fs.existsSync(realFileName))
 															{
@@ -977,8 +1052,15 @@ app.whenReady().then(() =>
     	
     	return;
 	}
-    else if (program.rawArgs.indexOf('-h') > -1 || program.rawArgs.indexOf('--help') > -1 || program.rawArgs.indexOf('-V') > -1 || program.rawArgs.indexOf('--version') > -1) //To prevent execution when help/version arg is used
+    else if (argv.some(a => a === '-V' || a === '--version')) //To prevent execution when version arg is used
 	{
+		console.log(app.getVersion());
+		app.quit();
+    	return;
+	}
+    else if (argv.some(a => a === '-h' || a === '--help')) //To prevent execution when help arg is used
+	{
+		console.log(formatHelp(app.getVersion()));
 		app.quit();
     	return;
 	}
@@ -1011,9 +1093,12 @@ app.whenReady().then(() =>
 				{
 	    	    	//Open the file if new app request is from opening a file
 	    	    	var potFile = commandLine.pop();
-	    	    	
+
 	    	    	if (fs.existsSync(potFile))
 	    	    	{
+	    	    		// User intent: launched the app from CLI / file association
+	    	    		// while another instance was already running.
+	    	    		blessPath(potFile);
 	    	    		win.webContents.send('args-obj', {args: [potFile]});
 	    	    	}
 				}
@@ -1044,8 +1129,20 @@ app.whenReady().then(() =>
 		
 		if (loadEvtCount == 2)
 		{
+			// User intent: paths passed on the command line / file association.
+			if (Array.isArray(parsedArgs))
+			{
+				for (const a of parsedArgs)
+				{
+					if (typeof a === 'string' && a && fs.existsSync(a))
+					{
+						blessPath(a);
+					}
+				}
+			}
+
 			//Sending entire program is not allowed in Electron 9 as it is not native JS object
-			win.webContents.send('args-obj', {args: program.args, create: options.create});
+			win.webContents.send('args-obj', {args: parsedArgs, create: options.create});
 		}
 	}
 	
@@ -1057,18 +1154,20 @@ app.whenReady().then(() =>
     {
     	if (firstWinFilePath != null)
 		{
-    		if (program.args != null)
+    		if (parsedArgs != null)
     		{
-    			program.args.push(firstWinFilePath);
+    			parsedArgs.push(firstWinFilePath);
     		}
     		else
 			{
-    			program.args = [firstWinFilePath];
+    			parsedArgs = [firstWinFilePath];
 			}
 		}
-    	
+
     	firstWinLoaded = true;
-    	
+
+    	migrateLegacyRecentsOnce(win.webContents);
+
         win.webContents.zoomFactor = appZoom;
         win.webContents.setVisualZoomLevelLimits(1, appZoom);
 		loadFinished();
@@ -1129,28 +1228,28 @@ app.whenReady().then(() =>
 
     let updateNoAvailAdded = false;
     
-	function checkForUpdatesFn(e) 
-	{ 
-		if (e != null && e.senderFrame != null && 
+	function checkForUpdatesFn(e)
+	{
+		if (e != null && e.senderFrame != null &&
 			!validateSender(e.senderFrame)) return null;
 
+		manualUpdateCheck = true;
 		autoUpdater.checkForUpdates();
 
-		if (store != null)
-		{
-			store.set('dontCheckUpdates', false);
-		}
-		
-		if (!updateNoAvailAdded) 
+		if (!updateNoAvailAdded)
 		{
 			updateNoAvailAdded = true;
-			autoUpdater.on('update-not-available', (info) => {
+			autoUpdater.on('update-not-available', (info) =>
+			{
+				if (!manualUpdateCheck) return; // Suppress dialog for boot-time silent checks
+
+				manualUpdateCheck = false;
 				dialog.showMessageBox(
-					{
-						type: 'info',
-						title: 'No updates found',
-						message: 'Your application is up-to-date',
-					})
+				{
+					type: 'info',
+					title: 'No updates found',
+					message: 'Your application is up-to-date',
+				})
 			})
 		}
 	};
@@ -1205,6 +1304,49 @@ app.whenReady().then(() =>
 		click: checkForUpdatesFn
 	}
 
+	let autoCheckForUpdates = {
+		label: 'Check for Updates Automatically',
+		type: 'checkbox',
+		checked: store == null || store.get('dontCheckUpdates') !== true,
+		click: (menuItem) =>
+		{
+			if (store != null)
+			{
+				store.set('dontCheckUpdates', !menuItem.checked);
+			}
+		}
+	}
+
+	function setUpdateIntervalFn()
+	{
+		const hours = [24, 48, 72, 168];
+		const currentHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
+		const buttons = hours.map(h => h === 168 ? '1 week' : `${h} hours`);
+		buttons.push('Cancel');
+
+		dialog.showMessageBox(win,
+		{
+			type: 'question',
+			title: 'Update Check Interval',
+			message: 'How often should draw.io check for updates?',
+			detail: `Current interval: ${currentHours === 168 ? '1 week' : currentHours + ' hours'}`,
+			buttons: buttons,
+			defaultId: hours.indexOf(currentHours) >= 0 ? hours.indexOf(currentHours) : hours.indexOf(DEFAULT_UPDATE_CHECK_HOURS),
+			cancelId: buttons.length - 1
+		}).then(result =>
+		{
+			if (result.response < hours.length && store != null)
+			{
+				store.set('updateCheckIntervalHours', hours[result.response]);
+			}
+		});
+	}
+
+	let setUpdateInterval = {
+		label: 'Set Update Check Interval...',
+		click: setUpdateIntervalFn
+	}
+
 	let zoomIn = {
 		label: 'Zoom In',
 		click: zoomInFn
@@ -1239,6 +1381,8 @@ app.whenReady().then(() =>
 	          click() { shell.openExternal('https://github.com/jgraph/drawio-desktop/issues'); }
 			},
 			checkForUpdates,
+			autoCheckForUpdates,
+			setUpdateInterval,
 	        { type: 'separator' },
 			resetZoom,
 			zoomIn,
@@ -1266,7 +1410,7 @@ app.whenReady().then(() =>
 	    
 	    if (disableUpdate)
 		{
-			template[0].submenu.splice(2, 1);
+			template[0].submenu.splice(2, 3);
 		}
 		
 		const menuBar = menu.buildFromTemplate(template)
@@ -1283,8 +1427,20 @@ app.whenReady().then(() =>
 		owner: 'jgraph'
 	})
 	
-	if (store == null || (!disableUpdate && !store.get('dontCheckUpdates')))
+	// Cache update check - configurable interval (default: 24 hours)
+	const DEFAULT_UPDATE_CHECK_HOURS = 24;
+	const updateCheckHours = store?.get('updateCheckIntervalHours') ?? DEFAULT_UPDATE_CHECK_HOURS;
+	const UPDATE_CHECK_INTERVAL = updateCheckHours * 60 * 60 * 1000;
+	const lastUpdateCheck = store?.get('lastUpdateCheck') || 0;
+	const shouldCheckUpdates = Date.now() - lastUpdateCheck > UPDATE_CHECK_INTERVAL;
+	
+	if (store == null || (!disableUpdate && !store.get('dontCheckUpdates') && shouldCheckUpdates))
 	{
+		if (store != null)
+		{
+			store.set('lastUpdateCheck', Date.now());
+		}
+		
 		autoUpdater.checkForUpdates()
 	}
 })
@@ -1330,11 +1486,14 @@ app.on('activate', function ()
 
 app.on('will-finish-launching', function()
 {
-	app.on("open-file", function(event, filePath) 
+	app.on("open-file", function(event, filePath)
 	{
 	    event.preventDefault();
 		// Creating a new window while a save/open dialog is open crashes the app
 		if (dialogOpen) return;
+
+		// User intent: OS handed us a path via file association.
+		blessPath(filePath);
 
 	    if (firstWinLoaded)
 	    {
@@ -1405,18 +1564,36 @@ app.on('web-contents-created', (event, contents) => {
 	})
 })
 
-autoUpdater.on('error', e => log.error('@error@\n', e))
-
-autoUpdater.on('update-available', (a, b) =>
+autoUpdater.on('error', e =>
 {
-	if (silentUpdate) return;
+	manualUpdateCheck = false;
+	log.error('@error@\n', e);
+	dialog.showMessageBox(
+	{
+		type: 'error',
+		title: 'Update Error',
+		message: 'An error occurred while updating.',
+		detail: e && e.message ? e.message : String(e)
+	});
+})
+
+autoUpdater.on('update-available', (info) =>
+{
+	// Boot-time silent path: download in the background; autoInstallOnAppQuit handles install
+	if (silentUpdate && !manualUpdateCheck)
+	{
+		autoUpdater.downloadUpdate();
+		return;
+	}
+
+	manualUpdateCheck = false;
 
 	dialog.showMessageBox(
 	{
 		type: 'question',
 		buttons: ['Ok', 'Cancel', 'Don\'t Ask Again'],
 		title: 'Confirm draw.io Update',
-		message: 'draw.io update available.\n\nWould you like to download and install new version?',
+		message: `draw.io update available (${app.getVersion()} → ${info.version}).\n\nWould you like to download and install new version?`,
 		detail: 'Application will automatically restart to apply update after download',
 	}).then( result =>
 	{
@@ -1541,15 +1718,18 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 	var outOffset = 0;
 	var data = text;
 	var dataLen = isDpi? 9 : key.length + data.length + 1; //we add 1 zeros with non-compressed data, for pHYs it's 2 of 4-byte-int + 1 byte
-	
+
 	//prepare compressed data to get its size
 	if (compressed)
 	{
-		data = zlib.deflateRawSync(encodeURIComponent(text));
+		// PNG zTXt requires an RFC 1950 zlib datastream, not raw deflate
+		// [jgraph/drawio-desktop#2425]
+		data = zlib.deflateSync(encodeURIComponent(text));
 		dataLen = key.length + data.length + 2; //we add 2 zeros with compressed data
 	}
-	
-	var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 4); //4 is the header size "zTXt", "tEXt" or "pHYs"
+
+	// 12 = chunk framing overhead: length(4) + type(4) + CRC(4)
+	var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 12);
 	
 	try
 	{
@@ -1588,10 +1768,12 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 				// Insert zTXt chunk before IDAT chunk
 				outBuff.writeInt32BE(dataLen, outOffset);
 				outOffset += 4;
-				
+
 				var typeSignature = isDpi? 'pHYs' : (compressed ? "zTXt" : "tEXt");
 				outBuff.write(typeSignature, outOffset);
-				
+
+				// CRC covers chunk type + chunk data — start of range is the type field
+				var crcStart = outOffset;
 				outOffset += 4;
 
 				if (isDpi)
@@ -1602,11 +1784,6 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 					outBuff.writeInt32BE(dpm, outOffset + 4);
 					outBuff.writeInt8(1, outOffset + 8);
 					outOffset += 9;
-
-					data = Buffer.allocUnsafe(9);
-					data.writeInt32BE(dpm, 0);
-					data.writeInt32BE(dpm, 4);
-					data.writeInt8(1, 8);
 				}
 				else
 				{
@@ -1623,15 +1800,14 @@ function writePngWithText(origBuff, key, text, compressed, base64encoded)
 					}
 					else
 					{
-						outBuff.write(data, outOffset);	
+						outBuff.write(data, outOffset);
 					}
 
-					outOffset += data.length;				
+					outOffset += data.length;
 				}
 
 				var crcVal = 0xffffffff;
-				crcVal = crc.crcjam(typeSignature, crcVal);
-				crcVal = crc.crcjam(data, crcVal);
+				crcVal = crc.crcjam(outBuff.subarray(crcStart, outOffset), crcVal);
 
 				// CRC
 				outBuff.writeInt32BE(crcVal ^ 0xffffffff, outOffset);
@@ -1683,12 +1859,14 @@ async function mergePdfs(pdfFiles, xml)
 				replace(/\(/g, "\\(").replace(/\)/g, "\\)"));
 		}
 
-		const pdfBytes = await pdfDoc.save();
-		
+		// Forces /ObjStm so the hex-encoded Subject is reachable by the PDF
+		// importer [jgraph/drawio-desktop#2394]
+		const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
+
 		return Buffer.from(pdfBytes);
 	}
 
-	try 
+	try
 	{
 		const pdfDoc = await PDFDocument.create();
 		pdfDoc.setCreator('diagrams.net');
@@ -1760,7 +1938,21 @@ function readPngXml(buffer)
 				{
 					var dataStart = keyEnd + 2; // Skip null + compression method
 					var compressed = buffer.subarray(dataStart, offset + length);
-					return decodeURIComponent(zlib.inflateRawSync(compressed).toString());
+					var inflated;
+
+					try
+					{
+						inflated = zlib.inflateSync(compressed);
+					}
+					catch (e)
+					{
+						// Fallback for PNGs produced by the pre-fix CLI which
+						// wrote raw deflate instead of zlib datastream
+						// [jgraph/drawio-desktop#2425]
+						inflated = zlib.inflateRawSync(compressed);
+					}
+
+					return decodeURIComponent(inflated.toString());
 				}
 				else
 				{
@@ -2098,7 +2290,8 @@ function exportDiagram(event, args, directFinalize)
 				backgroundThrottling: false,
 				contextIsolation: true,
 				disableBlinkFeatures: 'Auxclick', // Is this needed?
-				offscreen: true,
+				// Electron 42 offscreen DPR defaults to 1; force 2 so post-capture img.resize() downsamples [jgraph/drawio-desktop#2422]
+				offscreen: { deviceScaleFactor: 2 },
 			},
 			show : false,
 			frame: false,
@@ -2606,6 +2799,119 @@ function isConflict(origStat, stat)
 	return stat != null && origStat != null && stat.mtimeMs != origStat.mtimeMs;
 };
 
+function reqStr(v, name)
+{
+	if (typeof v !== 'string' || !v)
+	{
+		throw new Error('bad arg: ' + name);
+	}
+
+	return v;
+}
+
+// Returns true if `realpath` is a draft- or backup-naming variant of any path
+// in blessedPaths (same directory, basename starts with DRAFT_PREFEX +
+// origBasename or BKP_PREFEX + origBasename). Drafts and backups are
+// derivative — drawio writes them as siblings of files the user opened.
+function isDraftOrBkpOfBlessed(realpath)
+{
+	const dir = path.dirname(realpath);
+	const base = path.basename(realpath);
+
+	for (const blessed of blessedPaths)
+	{
+		if (path.dirname(blessed) !== dir) continue;
+
+		const blessedBase = path.basename(blessed);
+
+		if (base.startsWith(DRAFT_PREFEX + blessedBase) ||
+			base.startsWith(OLD_DRAFT_PREFEX + blessedBase) ||
+			base.startsWith(BKP_PREFEX + blessedBase) ||
+			base.startsWith(OLD_BKP_PREFEX + blessedBase))
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// The renderer is semi-untrusted: it parses attacker-controlled diagram XML,
+// .vsdx, SVG, Mermaid, etc. validateSender is necessary but not sufficient,
+// because a renderer-side XSS attacker would also pass it. So write-side IPC
+// handlers must additionally confirm the requested path is one the user has
+// authorised through OS chrome (file picker, file association, argv) — see
+// blessPath. This function realpath-canonicalises the requested path
+// (defeating symlink traversal) and accepts only paths in blessedPaths or
+// their draft/backup siblings.
+async function assertWritablePath(p)
+{
+	if (typeof p !== 'string' || !p || p.includes('\0'))
+	{
+		throw new Error('path not authorised');
+	}
+
+	const resolved = path.resolve(p);
+	let realpath;
+
+	try
+	{
+		realpath = await fsProm.realpath(resolved);
+	}
+	catch (e)
+	{
+		// File doesn't exist yet (e.g. Save As to a new file). Canonicalise
+		// the parent directory so symlinks in the directory chain are still
+		// resolved.
+		try
+		{
+			const parentReal = await fsProm.realpath(path.dirname(resolved));
+			realpath = path.join(parentReal, path.basename(resolved));
+		}
+		catch (e2)
+		{
+			throw new Error('path not authorised');
+		}
+	}
+
+	if (realpath.startsWith(appBaseDir))
+	{
+		throw new Error('path not authorised');
+	}
+
+	// Block writes anywhere inside userData (settings store, plugins, Local
+	// Storage). installPlugin has its own write-into-userData flow and is
+	// out of scope here; it does not go through assertWritablePath.
+	let userDataDir;
+
+	try
+	{
+		userDataDir = path.resolve(app.getPath('userData'));
+	}
+	catch (e)
+	{
+		userDataDir = null;
+	}
+
+	if (userDataDir && (realpath === userDataDir ||
+		realpath.startsWith(userDataDir + path.sep)))
+	{
+		throw new Error('path not authorised');
+	}
+
+	if (blessedPaths.has(realpath) || blessedPaths.has(resolved))
+	{
+		return;
+	}
+
+	if (isDraftOrBkpOfBlessed(realpath) || isDraftOrBkpOfBlessed(resolved))
+	{
+		return;
+	}
+
+	throw new Error('path not authorised');
+};
+
 function getDraftFileName(fileObject)
 {
 	let filePath = fileObject.path;
@@ -2673,54 +2979,66 @@ async function saveDraft(fileObject, data)
 {
 	var draftFileName = fileObject.draftFileName || getDraftFileName(fileObject);
 
-	if (!checkFileContent(data) || path.resolve(draftFileName).startsWith(appBaseDir))
+	if (!checkFileContent(data))
 	{
 		throw new Error('Invalid file data');
 	}
-	else
-	{
-		let draftFh;
 
+	await assertWritablePath(draftFileName);
+
+	let draftFh;
+
+	try
+	{
+		draftFh = await fsProm.open(draftFileName, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+		await fsProm.writeFile(draftFh, data, 'utf8');
+		await draftFh.sync(); // Flush to disk
+	}
+	finally
+	{
+		await draftFh?.close();
+	}
+
+	if (isWin)
+	{
 		try
 		{
-			draftFh = await fsProm.open(draftFileName, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
-			await fsProm.writeFile(draftFh, data, 'utf8');
-			await draftFh.sync(); // Flush to disk
-		}
-		finally
-		{
-			await draftFh?.close();
-		}
-
-		if (isWin)
-		{
-			try
+			// Add Hidden attribute:
+			var child = spawn('attrib', ['+h', draftFileName]);
+			child.on('error', function(err)
 			{
-				// Add Hidden attribute:
-				var child = spawn('attrib', ['+h', draftFileName]);
-    			child.on('error', function(err) 
-				{
-					console.log('hiding draft file error: ' + err);
-    			});
-			} catch(e) {}
-		}
-
-		return draftFileName;
+				console.log('hiding draft file error: ' + err);
+			});
+		} catch(e) {}
 	}
+
+	return draftFileName;
 }
 
 async function saveFile(fileObject, data, origStat, overwrite, defEnc)
 {
-	if (!checkFileContent(data) || path.resolve(fileObject.path).startsWith(appBaseDir))
+	if (!checkFileContent(data))
 	{
 		throw new Error('Invalid file data');
 	}
+
+	if (fileObject == null || typeof fileObject.path !== 'string')
+	{
+		throw new Error('bad arg: fileObject.path');
+	}
+
+	await assertWritablePath(fileObject.path);
 
 	var retryCount = 0;
 	var backupCreated = false;
 	var bkpPath = path.join(path.dirname(fileObject.path), BKP_PREFEX + path.basename(fileObject.path) + BKP_EXT);
 	const oldBkpPath = path.join(path.dirname(fileObject.path), OLD_BKP_PREFEX + path.basename(fileObject.path) + BKP_EXT);
 	var writeEnc = defEnc || fileObject.encoding;
+
+	// Backup paths are derived siblings of fileObject.path, so they pass the
+	// draft/bkp carve-out — but realpath them anyway in case symlinks have
+	// been planted at those names.
+	await assertWritablePath(bkpPath);
 
 	var writeFile = async function()
 	{
@@ -2766,7 +3084,12 @@ async function saveFile(fileObject, data, origStat, overwrite, defEnc)
 				//Delete old backup file with old prefix
 				if (fs.existsSync(oldBkpPath))
 				{
-					fs.unlink(oldBkpPath, (err) => {}); //Ignore errors
+					try
+					{
+						await assertWritablePath(oldBkpPath);
+						fs.unlink(oldBkpPath, (err) => {}); //Ignore errors
+					}
+					catch (e) {} //Ignore — path failed authorisation, skip cleanup.
 				}
 			}
 
@@ -2841,25 +3164,25 @@ async function saveFile(fileObject, data, origStat, overwrite, defEnc)
 
 async function writeFile(filePath, data, enc)
 {
-	if (!checkFileContent(data, enc) || path.resolve(filePath).startsWith(appBaseDir))
+	if (!checkFileContent(data, enc))
 	{
 		throw new Error('Invalid file data');
 	}
-	else
-	{
-		let fh;
 
-		try
-		{
-			// O_SYNC is for sync I/O and reduce risk of file corruption
-			fh = await fsProm.open(filePath, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
-			await fsProm.writeFile(fh, data, enc);
-			await fh.sync(); // Flush to disk
-		}
-		finally
-		{
-			await fh?.close();
-		}
+	await assertWritablePath(filePath);
+
+	let fh;
+
+	try
+	{
+		// O_SYNC is for sync I/O and reduce risk of file corruption
+		fh = await fsProm.open(filePath, O_SYNC | O_CREAT | O_WRONLY | O_TRUNC);
+		await fsProm.writeFile(fh, data, enc);
+		await fh.sync(); // Flush to disk
+	}
+	finally
+	{
+		await fh?.close();
 	}
 };
 
@@ -2904,21 +3227,38 @@ async function showOpenDialog(defaultPath, filters, properties)
 {
 	let win = BrowserWindow.getFocusedWindow();
 
-	return dialog.showOpenDialog(win, {
+	const result = await dialog.showOpenDialog(win, {
 		defaultPath: defaultPath,
 		filters: filters,
 		properties: properties
 	});
+
+	if (!result.canceled && Array.isArray(result.filePaths))
+	{
+		for (const fp of result.filePaths)
+		{
+			blessPath(fp);
+		}
+	}
+
+	return result;
 };
 
 async function showSaveDialog(defaultPath, filters)
 {
 	let win = BrowserWindow.getFocusedWindow();
 
-	return dialog.showSaveDialog(win, {
+	const result = await dialog.showSaveDialog(win, {
 		defaultPath: defaultPath,
 		filters: filters
 	});
+
+	if (!result.canceled)
+	{
+		blessPath(result.filePath);
+	}
+
+	return result;
 };
 
 async function installPlugin(filePath)
@@ -3025,15 +3365,17 @@ function clipboardAction(method, data)
 	}
 }
 
-async function deleteFile(file) 
+async function deleteFile(file)
 {
+	await assertWritablePath(file);
+
 	// Reading the header of the file to confirm it is a file we can delete
 	let fh = await fsProm.open(file, O_RDONLY);
 	let buffer = Buffer.allocUnsafe(16);
 	await fh.read(buffer, 0, 16);
 	await fh.close();
 
-	if (checkFileContent(buffer) && !path.resolve(file).startsWith(appBaseDir))
+	if (checkFileContent(buffer))
 	{
 		await fsProm.unlink(file);
 	}
@@ -3155,15 +3497,22 @@ ipcMain.on("rendererReq", async (event, args) =>
 		switch(args.action)
 		{
 		case 'saveFile':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
 			ret = await saveFile(args.fileObject, args.data, args.origStat, args.overwrite, args.defEnc);
 			break;
 		case 'writeFile':
+			reqStr(args.path, 'path');
 			ret = await writeFile(args.path, args.data, args.enc);
 			break;
 		case 'saveDraft':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
 			ret = await saveDraft(args.fileObject, args.data);
 			break;
 		case 'getFileDrafts':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
 			ret = await getFileDrafts(args.fileObject);
 			break;
 		case 'getDocumentsFolder':
@@ -3185,33 +3534,41 @@ ipcMain.on("rendererReq", async (event, args) =>
 			dialogOpen = false;
 			break;
 		case 'installPlugin':
+			reqStr(args.filePath, 'filePath');
 			ret = await installPlugin(args.filePath);
 			break;
 		case 'uninstallPlugin':
+			reqStr(args.plugin, 'plugin');
 			ret = await uninstallPlugin(args.plugin);
 			break;
 		case 'getPluginFile':
+			reqStr(args.plugin, 'plugin');
 			ret = await getPluginFile(args.plugin);
 			break;
 		case 'isPluginsEnabled':
 			ret = enablePlugins;
 			break;
 		case 'dirname':
+			reqStr(args.path, 'path');
 			ret = await dirname(args.path);
 			break;
 		case 'readFile':
+			reqStr(args.filename, 'filename');
 			ret = await readFile(args.filename, args.encoding);
 			break;
 		case 'clipboardAction':
 			ret = await clipboardAction(args.method, args.data);
 			break;
 		case 'deleteFile':
+			reqStr(args.file, 'file');
 			ret = await deleteFile(args.file);
 			break;
 		case 'fileStat':
+			reqStr(args.file, 'file');
 			ret = await fileStat(args.file);
 			break;
 		case 'isFileWritable':
+			reqStr(args.file, 'file');
 			ret = await isFileWritable(args.file);
 			break;
 		case 'windowAction':
@@ -3221,9 +3578,11 @@ ipcMain.on("rendererReq", async (event, args) =>
 			ret = await openExternal(args.url);
 			break;
 		case 'watchFile':
+			reqStr(args.path, 'path');
 			ret = await watchFile(args.path);
 			break;
-		case 'unwatchFile':	
+		case 'unwatchFile':
+			reqStr(args.path, 'path');
 			ret = await unwatchFile(args.path);
 			break;
 		case 'exit':
@@ -3233,7 +3592,7 @@ ipcMain.on("rendererReq", async (event, args) =>
 			ret = await getLocalFonts();
 			break;
 		case 'isFullscreen':
-			ret = BrowserWindow.getFocusedWindow().isFullScreen();
+			ret = BrowserWindow.getFocusedWindow()?.isFullScreen() ?? false;
 			break;
 		};
 

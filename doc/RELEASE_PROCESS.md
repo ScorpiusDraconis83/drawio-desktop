@@ -1,8 +1,8 @@
 # draw.io Desktop Release Process
 
 **Document ID:** REL-PROC-DESKTOP-001  
-**Version:** 1.0  
-**Last Updated:** 2026-01-02
+**Version:** 1.1  
+**Last Updated:** 2026-05-09
 **Owner:** Engineering Team
 
 ---
@@ -122,7 +122,7 @@ After the prepare-release workflow completes:
 After all build workflows complete successfully:
 
 1. Go to GitHub Releases - a draft release will have been created with all artifacts
-2. Verify all platform builds are present (Windows builds are automatically signed via CI using `CSC_LINK` secret)
+2. Verify all platform builds are present (Windows and macOS builds are signed automatically in CI — see Section 11)
 3. Add release notes (Section 8)
 4. **Obtain Reviewer approval** (Section 5)
 5. Click "Publish release"
@@ -267,8 +267,81 @@ For audits requiring longer retention, download artifacts to secure storage.
 
 ---
 
+## 11. Code Signing
+
+Windows and macOS builds are signed during CI. Linux artifacts are unsigned (beyond distribution-level signatures applied by the snap store etc.).
+
+### 11.1 Windows — Azure Trusted Signing
+
+Windows binaries (NSIS installer, MSI, portable, inner `.exe`) are signed via Microsoft Azure Trusted Signing. Microsoft has rebranded this service to "Artifact Signing" — same product, the resource provider is still `Microsoft.CodeSigning`. The integration uses our own electron-builder sign hook at [`build/sign-trusted.mjs`](../build/sign-trusted.mjs), invoked from `win.signtoolOptions.sign` in [`electron-builder-win.json`](../electron-builder-win.json), [`electron-builder-win32.json`](../electron-builder-win32.json), and [`electron-builder-win-arm64.json`](../electron-builder-win-arm64.json).
+
+**Azure resources** (region: West Europe):
+
+| Resource | Name |
+|---|---|
+| Resource group | `rg-drawio-signing` |
+| Artifact Signing account | `drawio-signing` |
+| Certificate profile | `drawio-codesign` |
+| Endpoint | `https://weu.codesigning.azure.net` |
+| Service principal (CI) | `drawio-ci-signing` |
+| Role assigned to SP | `Artifact Signing Certificate Profile Signer` (scope: account) |
+| Identity validation subject | `draw.io Ltd` (UK organisation) |
+
+**GitHub secrets** (repository-level on `jgraph/drawio-desktop`):
+
+| Secret | Source |
+|---|---|
+| `AZURE_TENANT_ID` | `tenant` from `az ad sp create-for-rbac` |
+| `AZURE_CLIENT_ID` | `appId` (the service principal application id) |
+| `AZURE_CLIENT_SECRET` | `password` (rotate via `az ad sp credential reset --id $APP_ID`) |
+
+**Workflow step.** [`.github/workflows/electron-builder-win.yml`](../.github/workflows/electron-builder-win.yml) → `Set up signing dependencies (Azure Trusted Signing)` downloads the `Microsoft.ArtifactSigning.Client` NuGet package (pinned, currently 1.0.128), extracts the dlib at `bin/x64/Azure.CodeSigning.Dlib.dll`, locates `signtool.exe` from the Windows SDK (filtering out the unsupported `10.0.20348` SDK version), and exports both as env vars consumed by `sign-trusted.mjs`.
+
+**Cert lifecycle.** Microsoft auto-rotates the leaf certificate every three days. Signatures remain valid beyond that thanks to RFC 3161 timestamping at `http://timestamp.acs.microsoft.com`. There is no manual renewal of the certificate itself — only the Azure account, certificate profile, and identity validation need maintenance, and none of those expire under normal usage.
+
+**Publisher transition.** The current cert subject is `CN=draw.io Ltd, O=draw.io Ltd, ...`. Releases up to v29.x were signed `JGraph Ltd` via SSL.com. Auto-update bridges both publishers via `win.signtoolOptions.publisherName: ["JGraph Ltd", "draw.io Ltd"]` in each Windows config. Drop `JGraph Ltd` once v30.x is well-distributed (a few release cycles).
+
+**Verifying a signed build.** Right-click any signed `.exe` → Properties → Digital Signatures and confirm:
+
+- Signer: `draw.io Ltd`
+- Timestamp present
+- Chain terminates at a Microsoft root certificate
+
+### 11.2 macOS — Apple Developer ID
+
+macOS `.app`, `.dmg`, and the `.appex` Quick Look extension are signed with the Apple Developer ID Application certificate, then notarised by Apple. Implementation is in [`build/notarize.mjs`](../build/notarize.mjs) (the electron-builder `afterSign` hook).
+
+**GitHub secrets** (organisation-level on jgraph):
+
+| Secret | Purpose |
+|---|---|
+| `CSC_LINK` | Apple Developer ID Application `.p12`, base64-encoded |
+| `CSC_KEY_PASSWORD` | `.p12` password |
+| `APPLEID` | Apple ID for notarisation submission |
+| `APPLEIDPASS` | App-specific password for notarisation |
+| `APPLE_TEAM_ID` | Apple Developer team identifier |
+
+These are organisation-level (not repository-level) because they're shared with other Apple-signed jgraph projects. The Apple Developer ID Application certificate has a multi-year validity; renewal is a manual annual operation through the Apple Developer portal.
+
+### 11.3 Linux — unsigned
+
+Linux artifacts (`.deb`, `.rpm`, `.AppImage`, `.snap`) are unsigned by us. The snap store re-signs `.snap` packages on upload via `SNAP_TOKEN`; other formats rely on transport-level (HTTPS) trust and the user's distribution package manager.
+
+### 11.4 Handling signing failures
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Windows: `SignTool Error: No certificates were found that met all the given criteria.` | Azure auth failure (expired SP secret, RBAC not propagated) | Reset SP credential; verify `AZURE_*` repo secrets match latest values |
+| Windows: `Trusted Signing dlib not found at ...` | NuGet package layout changed or version unavailable | Confirm `Microsoft.ArtifactSigning.Client` version still resolves; bump pinned version |
+| Windows: 403 Forbidden during signing | Region/endpoint mismatch | Confirm endpoint URL matches the account's region (`weu` for West Europe) |
+| macOS: notarisation rejected | Apple ID password expired, or app-specific password revoked | Generate a new app-specific password at appleid.apple.com; update `APPLEIDPASS` secret |
+| macOS: `errSecInternalComponent` | `.p12` corrupted or wrong password | Re-export `.p12` from Keychain Access; update `CSC_LINK` and `CSC_KEY_PASSWORD` |
+
+---
+
 ## Revision History
 
 | Version | Date       | Author      | Changes |
 |---------|------------|-------------|---------|
 | 1.0     | 2026.01.02 | D Benson    | Initial release |
+| 1.1     | 2026.05.09 | D Benson    | Added §11 Code Signing (Windows via Azure Trusted Signing, macOS via Apple Developer ID); fixed stale `CSC_LINK` reference in §4.4 (it's the macOS secret, not Windows) |

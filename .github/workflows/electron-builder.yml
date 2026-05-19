@@ -25,11 +25,11 @@ jobs:
       OS_NAME: ${{ matrix.os }}
     steps:
     - name: Checkout reposistory
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         submodules: true
     - name: Checkout drawio-dev
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: jgraph/drawio-dev
         token: ${{ secrets.GH_TOKEN }}
@@ -65,7 +65,7 @@ jobs:
         if [ "$OS_NAME" = "macos-latest" ]; then cp viewer-static.min.js ../../../../../build/viewer-static.min.js; fi
         rm -rf atlas-viewer.min.js atlas.min.js cryptojs deflate dropbox embed* freehand integrate.min.js jquery jszip mermaid onedrive orgchart reader.min.js rough sanitizer simplepeer spin viewer-static.min.js viewer.min.js
     - name: Installing Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: 24
     - name: Build for ${{ matrix.os}}

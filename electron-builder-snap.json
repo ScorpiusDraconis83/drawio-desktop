@@ -32,7 +32,7 @@
       "removable-media"
     ]
   },
-  "afterPack": "build/fuses.cjs",
+  "afterPack": "build/fuses.mjs",
   "fileAssociations": [
 	  {
 	  	"ext": "drawio",

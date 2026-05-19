@@ -3,6 +3,40 @@ const {
     ipcRenderer
 } = require("electron");
 
+// One-shot migration: when the main process determines this is the first
+// launch with the new defaultAdaptiveColors behaviour, it passes the chosen
+// mode here via webPreferences.additionalArguments. We seed it into the
+// drawio Configuration JSON in localStorage (key '.configuration') so that
+// Editor.configure() picks it up during App.js boot. We never overwrite an
+// explicit value the user may have already set via Extras > Configuration.
+try
+{
+	const flagPrefix = '--initial-adaptive-colors=';
+	const flagArg = process.argv.find(a => a.startsWith(flagPrefix));
+
+	if (flagArg)
+	{
+		const mode = flagArg.slice(flagPrefix.length);
+
+		if (mode === 'auto' || mode === 'simple' || mode === 'none')
+		{
+			const raw = window.localStorage.getItem('.configuration');
+			const cfg = raw ? JSON.parse(raw) : {};
+
+			if (cfg.defaultAdaptiveColors == null)
+			{
+				cfg.defaultAdaptiveColors = mode;
+				window.localStorage.setItem('.configuration', JSON.stringify(cfg));
+			}
+		}
+	}
+}
+catch (e)
+{
+	// Don't block app startup if the migration fails for any reason.
+	console.error('Failed to seed defaultAdaptiveColors:', e);
+}
+
 let reqId = 1;
 let reqInfo = {};
 let fileChangedListeners = {};

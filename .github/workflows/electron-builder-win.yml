@@ -12,11 +12,11 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
     - name: Checkout reposistory
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         submodules: true
     - name: Checkout drawio-dev
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         repository: jgraph/drawio-dev
         token: ${{ secrets.GH_TOKEN }}
@@ -52,7 +52,7 @@ jobs:
         cd src\main\webapp\js
         Remove-Item 'atlas-viewer.min.js','atlas.min.js','cryptojs','deflate','dropbox','embed*','freehand','integrate.min.js','jquery','jszip','mermaid','onedrive','orgchart','reader.min.js','rough','sanitizer','simplepeer','spin','viewer-static.min.js','viewer.min.js'  -Recurse -Force
     - name: Installing Node
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@v6
       with:
         node-version: 24
     - name: Prepare for Windows Build
@@ -60,10 +60,47 @@ jobs:
       run: |
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         npm ci
+    - name: Set up signing dependencies (Azure Trusted Signing)
+      shell: powershell
+      run: |
+        # Download Microsoft.ArtifactSigning.Client NuGet package and extract dlib.
+        # This is Microsoft's renamed successor to Microsoft.Trusted.Signing.Client
+        # (renamed during the Trusted Signing → Artifact Signing rebrand). Despite
+        # the package rename, the dlib filename and path inside the package are
+        # unchanged: bin/x64/Azure.CodeSigning.Dlib.dll. Pinned version keeps the
+        # build reproducible; bump deliberately when a new release is needed.
+        $package = "Microsoft.ArtifactSigning.Client"
+        $version = "1.0.128"
+        $url = "https://www.nuget.org/api/v2/package/$package/$version"
+        $nupkg = Join-Path $env:TEMP "$package.zip"
+        Invoke-WebRequest -Uri $url -OutFile $nupkg
+        $extract = Join-Path $env:TEMP "trusted-signing-dlib"
+        if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
+        Expand-Archive -Path $nupkg -DestinationPath $extract -Force
+        $dlib = Join-Path $extract "bin\x64\Azure.CodeSigning.Dlib.dll"
+        if (-not (Test-Path $dlib)) { throw "Trusted Signing dlib not found at $dlib" }
+        "TRUSTED_SIGNING_DLIB_PATH=$dlib" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+        # Locate signtool.exe (Windows SDK is pre-installed on windows-latest).
+        # Microsoft explicitly notes that the 10.0.20348 SDK (Windows Server 2022) is
+        # not compatible with the Artifact Signing dlib, so filter it out before
+        # picking the highest version. On today's windows-latest the highest SDK is
+        # well above 20348 anyway; this is purely defensive against future runner
+        # image changes. See: https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations
+        $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\10\.0\.20348\.' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1 -ExpandProperty FullName
+        if (-not $signtool) { throw "signtool.exe not found in Windows SDK (or only the unsupported 10.0.20348 was available)" }
+        "SIGNTOOL_PATH=$signtool" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+        Write-Host "Trusted Signing dlib: $dlib"
+        Write-Host "signtool.exe:         $signtool"
     - name: Build for Windows (x32 & arm64)
       env:
-        CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-        CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       shell: powershell
       run: |
         #Disable auto-update and build 32bit/arm64 first such that latest.yml is for 64bit only (64bit will overwrite 32bit one)
@@ -72,8 +109,9 @@ jobs:
         npm run release-win-arm64
     - name: Build for Windows (x64)
       env:
-        CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-        CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+        AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       shell: powershell
       run: |
         #Enable auto-update again

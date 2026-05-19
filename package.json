@@ -1,16 +1,17 @@
 {
   "name": "draw.io",
-  "version": "29.6.6",
+  "version": "30.0.2",
   "description": "draw.io desktop",
   "exports": "./src/main/electron.js",
   "type": "module",
   "main": "src/main/electron.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "start": "electron .",
     "sync": "node ./sync.cjs",
+    "test": "node --test src/test/cli-args.test.js",
     "release-win": "electron-builder --config electron-builder-win.json --publish always",
     "release-win32": "electron-builder --config electron-builder-win32.json --publish always",
     "release-win-arm64": "electron-builder --config electron-builder-win-arm64.json --publish always",
@@ -37,21 +38,19 @@
   "dependencies": {
     "@cantoo/pdf-lib": "^2.6.1",
     "buffer": "^6.0.3",
-    "commander": "^14.0.3",
     "compression": "^1.8.1",
     "crc": "^4.3.2",
     "electron-context-menu": "^4.1.1",
     "electron-log": "^5.4.3",
-    "electron-progressbar": "^2.2.1",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
     "tslib": "^2.8.1"
   },
   "devDependencies": {
-    "@electron/fuses": "^1.8.0",
+    "@electron/fuses": "^2.1.1",
     "@electron/notarize": "^3.1.1",
     "dotenv": "^17.3.1",
-    "electron": "^40.8.4",
+    "electron": "^42.0.0",
     "electron-builder": "^26.8.1",
     "quicklookjs": "^1.0.1",
     "sumchecker": "^3.0.1"

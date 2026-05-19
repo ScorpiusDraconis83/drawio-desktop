@@ -65,7 +65,7 @@
     ]
   },
   "afterSign": "build/notarize.mjs",
-  "afterPack": "build/fuses.cjs",
+  "afterPack": "build/fuses.mjs",
   "dmg": {
   },
   "linux": {

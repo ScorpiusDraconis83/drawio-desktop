@@ -1,9 +1,9 @@
 // https://github.com/electron-userland/electron-builder/issues/6365
-const path = require('path');
-const { flipFuses, FuseVersion, FuseV1Options } = require('@electron/fuses');
-const builder = require('electron-builder');
+import path from 'path';
+import { flipFuses, FuseVersion, FuseV1Options } from '@electron/fuses';
+import builder from 'electron-builder';
 
-async function addElectronFuses(context) 
+async function addElectronFuses(context)
 {
     const { appOutDir, packager: { appInfo: { productFilename } }, electronPlatformName, arch } = context;
 
@@ -28,7 +28,7 @@ async function addElectronFuses(context)
 
     console.log('Flipping fuses for: ', electronBinaryPath);
 
-    await flipFuses(electronBinaryPath, 
+    await flipFuses(electronBinaryPath,
     {
         version: FuseVersion.V1,
         [FuseV1Options.RunAsNode]: false, // Disables ELECTRON_RUN_AS_NODE
@@ -45,7 +45,7 @@ async function addElectronFuses(context)
     });
 }
 
-module.exports = async (context) =>
+export default async function (context)
 {
     await addElectronFuses(context);
-};
+}
