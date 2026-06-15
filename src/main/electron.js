@@ -3084,6 +3084,33 @@ async function saveDraft(fileObject, data)
 	return draftFileName;
 }
 
+// Reads the .bkp backup written before the last overwrite (see saveFile),
+// used for best-effort recovery when the main file fails to load. Returns
+// {data, created, modified, path} or null if no readable backup exists.
+async function getBkpFile(fileObject)
+{
+	let filePath = fileObject.path;
+	let bkpPaths = [
+		path.join(path.dirname(filePath), BKP_PREFEX + path.basename(filePath) + BKP_EXT),
+		path.join(path.dirname(filePath), OLD_BKP_PREFEX + path.basename(filePath) + BKP_EXT)
+	];
+
+	for (let i = 0; i < bkpPaths.length; i++)
+	{
+		try
+		{
+			let stat = await fsProm.lstat(bkpPaths[i]);
+			return {data: await fsProm.readFile(bkpPaths[i], 'utf8'),
+					created: stat.ctimeMs,
+					modified: stat.mtimeMs,
+					path: bkpPaths[i]};
+		}
+		catch (e){} // Ignore, try next prefix / no backup
+	}
+
+	return null;
+};
+
 async function saveFile(fileObject, data, origStat, overwrite, defEnc)
 {
 	if (!checkFileContent(data))
@@ -3583,6 +3610,11 @@ ipcMain.on("rendererReq", async (event, args) =>
 			if (args.fileObject == null) throw new Error('bad arg: fileObject');
 			reqStr(args.fileObject.path, 'fileObject.path');
 			ret = await getFileDrafts(args.fileObject);
+			break;
+		case 'getBkpFile':
+			if (args.fileObject == null) throw new Error('bad arg: fileObject');
+			reqStr(args.fileObject.path, 'fileObject.path');
+			ret = await getBkpFile(args.fileObject);
 			break;
 		case 'getDocumentsFolder':
 			ret = await getDocumentsFolder();
