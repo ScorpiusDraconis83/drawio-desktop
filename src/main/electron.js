@@ -817,6 +817,11 @@ app.whenReady().then(() =>
 				expArgs.extras = JSON.stringify({layers: options.layers.split(',')});
 			}
 
+			if (options.layout)
+			{
+				expArgs.layout = options.layout;
+			}
+
 			var paths = parsedArgs;
 			
 			// Remove --no-sandbox arg from the paths
@@ -924,6 +929,13 @@ app.whenReady().then(() =>
 								{
 									expArgs.pdfEncoded = true;
 									expArgs.xml = Buffer.from(fileContent).toString('base64');
+								}
+								else if (ext === '.mmd' || ext === '.mermaid')
+								{
+									// Mermaid is converted to a diagram in the renderer
+									// (export3.html loads the Mermaid bundle); export.js
+									// handles the data.mermaid input.
+									expArgs.mermaid = fileContent;
 								}
 								else
 								{
@@ -1085,6 +1097,16 @@ app.whenReady().then(() =>
 										mockEvent.reply('export-error', 'CSV to HTML export is not supported');
 										return;
 									}
+									else if (expArgs.mermaid)
+									{
+										mockEvent.reply('export-error', 'Mermaid to HTML export is not supported');
+										return;
+									}
+									else if (expArgs.layout)
+									{
+										mockEvent.reply('export-error', 'Layout is not supported for HTML export');
+										return;
+									}
 
 									var title = path.basename(curFile, path.extname(curFile));
 									var htmlData = buildHtmlExport(xml, title, options);
@@ -1215,7 +1237,7 @@ app.whenReady().then(() =>
 			}
 
 			//Sending entire program is not allowed in Electron 9 as it is not native JS object
-			win.webContents.send('args-obj', {args: parsedArgs, create: options.create});
+			win.webContents.send('args-obj', {args: parsedArgs, create: options.create, layout: options.layout});
 		}
 	}
 	
@@ -3417,7 +3439,14 @@ async function readFile(filename, encoding)
 {
 	let data = await fsProm.readFile(filename, encoding);
 
-	if (checkFileContent(data, encoding) && !path.resolve(filename).startsWith(appBaseDir))
+	// Mermaid (.mmd/.mermaid) files are plain text that checkFileContent does
+	// not recognise as a known diagram format; allow them through by extension
+	// (the renderer converts them to a diagram on open). The appBaseDir guard
+	// below still applies.
+	let isMermaid = /\.(mmd|mermaid)$/i.test(filename);
+
+	if ((checkFileContent(data, encoding) || isMermaid) &&
+		!path.resolve(filename).startsWith(appBaseDir))
 	{
 		return data;
 	}
