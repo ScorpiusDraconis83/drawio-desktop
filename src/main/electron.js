@@ -2517,7 +2517,9 @@ function exportDiagram(event, args, directFinalize)
 					if (args.print)
 					{
 						pdfOptions = {
-							scaleFactor: args.pageScale,
+							// scaleFactor is an integer percent in Chromium (Electron 41+ honors
+							// it in the native macOS print dialog), so pageScale 1 = 100%, not 1%.
+							scaleFactor: 100 * (args.pageScale || 1),
 							printBackground: true,
 							pageSize : {
 								width: args.pageWidth * MICRON_TO_PIXEL,
