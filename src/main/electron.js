@@ -2395,6 +2395,11 @@ function exportDiagram(event, args, directFinalize)
 
 		const contents = browser.webContents;
 
+		// Resolved diagram XML reported by the renderer (render-finished). For
+		// Mermaid/CSV/layout inputs the CLI never set args.xml (or it's the
+		// pre-layout source), so this is preferred when embedding XML (-e).
+		var resolvedXml = null;
+
 		contents.on('did-finish-load', function()
 	    {
 			//Set finalize here since it is call in the reply below
@@ -2421,6 +2426,11 @@ function exportDiagram(event, args, directFinalize)
 				{
 					event.reply('export-error');
 					return;
+				}
+
+				if (renderInfo.xml != null)
+				{
+					resolvedXml = renderInfo.xml;
 				}
 
 				var pageCount = renderInfo.pageCount, bounds = null;
@@ -2492,9 +2502,11 @@ function exportDiagram(event, args, directFinalize)
 								data = writePngWithText(data, 'dpi', args.dpi);
 							}
 							
-							if (args.embedXml == "1" && args.format == 'png')
+							var embedSource = (resolvedXml != null) ? resolvedXml : args.xml;
+
+							if (args.embedXml == "1" && args.format == 'png' && embedSource != null)
 							{
-								data = writePngWithText(data, "mxGraphModel", args.xml, true,
+								data = writePngWithText(data, "mxGraphModel", embedSource, true,
 										base64encoded);
 							}
 							else
@@ -2556,8 +2568,8 @@ function exportDiagram(event, args, directFinalize)
 							// [jgraph/drawio-desktop#2170]. "All Pages" was unaffected
 							// because its from/to collapsed to one page, exiting the loop
 							// after the first full-document render.
-							// TODO extract the correct xml if the source was a pnd file
-							data = await mergePdfs([data], args.embedXml == '1' ? args.xml : null);
+							data = await mergePdfs([data], args.embedXml == '1' ?
+								((resolvedXml != null) ? resolvedXml : args.xml) : null);
 							event.reply('export-success', data);
 						})
 						.catch((error) => 
